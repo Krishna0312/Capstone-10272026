@@ -1,0 +1,32 @@
+27th Oct, 2026
+
+Create the fast API project. 
+
+The below one is the business problem.
+Readmission risk model has been built, validated and written up -- and it sits in a notebook. Operations can not consume it, so it produces no clinical or financial value. THe gap between working model and serviceable one is entirely engineering, and it is the gap most teams never cross.
+
+What to build:
+Package the model with fast API and docker and deploy with to a runtime managed with autoscaling policies and health probes (liveness and readiness). Add monitoring for latency, error rate and redaction distribution. 
+Build CI/CD with evaluation gates and tested rollback path -- trigger a rollback deliberately and so it working. 
+Report cold-start timeand SLO adherence under a load profile that matched the assumed clinical workflow. 
+
+SUccess matrics: p95 latency, cold-start time, SLO adherence, rollback surfice, audit log coverages. 
+
+Key technique: container packaging and managed runtime deployment.
+Autoscaling with liveness and readiness probes. 
+CI/CD evaluation gates and tested rollbacks.
+Production monitoring of latency and prediction distribution.
+Cold-start and SLO measurement under load.
+
+The above description is for the project i need to build, but first, build only
+the first part (which is ML model - for readmission)...u need to use 
+kaggle diabetes dataset of 130 hospitals of US.....
+using that dataset, build model from start to end (including improting libraries,
+EDA steps, train, validate, test (pick the best model with best performance metrics))
+
+
+
+next step: 
+-> we need to have fast api structure ..this is the foremost requirement
+-> we have already built the ML model but we need final model (which is the best in terms of metrics) should be in joblib format
+-> graffana, 
