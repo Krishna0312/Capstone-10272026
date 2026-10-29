@@ -1,7 +1,7 @@
 # Docker Build Command
 docker build -t readmission-risk-api .
 
-# Dcoker run command
+# Docker run command
 docker run -p 8000:8000 readmission-risk-api
 
 # Access API using below
