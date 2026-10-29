@@ -28,7 +28,7 @@ python stop_all.py
 python3 stop_all.py
 ```
 
-The scripts write logs and process state under `.run/`. They leave processes that were already running alone; they also avoid starting another training run if one is already active. Stopping training early discards its unfinished work. Training updates the model artifact on the local machine; rebuilding and redeploying the API image is required for the Kubernetes API to use that newly trained model.
+The scripts write logs and process state under `.run/`. They leave processes that were already running alone; they also avoid starting another training run if one is already active. The startup capture records each API, Prometheus, and Grafana pod's creation-to-ready duration in `.run/logs/cold_starts.jsonl` and publishes the latest timings to Prometheus through Pushgateway. Apply `k8s/monitoring.yaml` to install Pushgateway and configure Prometheus to scrape it, then re-import the updated Grafana dashboard to see the **Application Cold Start** panel. The watcher records existing ready pods on startup and newly created pods; it measures Kubernetes pod startup through readiness, not first-prediction model loading. Stopping training early discards its unfinished work. Training updates the model artifact on the local machine; rebuilding and redeploying the API image is required for the Kubernetes API to use that newly trained model.
 
 Install the full development and training environment, then run the API:
 
