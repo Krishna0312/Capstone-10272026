@@ -32,28 +32,28 @@ def _load_model() -> Any:
 class Features(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    encounter_id: Optional[int] = Field(None, description="Unique identifier for the encounter")
-    patient_nbr: Optional[int] = Field(None, description="Unique identifier for the patient")
+    encounter_id: Optional[int] = Field(None, ge=0, description="Unique identifier for the encounter")
+    patient_nbr: Optional[int] = Field(None, ge=0, description="Unique identifier for the patient")
     race: Optional[str] = Field(None, description="Patient's race")
     gender: Optional[str] = Field(None, description="Patient's gender")
     age: Optional[str] = Field(None, description="Patient's age group")
-    weight: Optional[float] = Field(None, description="Patient's weight")
-    admission_type_id: Optional[int] = Field(None, description="Type of admission")
-    discharge_disposition_id: Optional[int] = Field(None, description="Discharge status")
-    admission_source_id: Optional[int] = Field(None, description="Source of admission")
-    time_in_hospital: Optional[int] = Field(None, description="Number of days spent in the hospital")
+    weight: Optional[str] = Field(None, description="Patient's weight range")
+    admission_type_id: Optional[int] = Field(None, ge=0, description="Type of admission")
+    discharge_disposition_id: Optional[int] = Field(None, ge=0, description="Discharge status")
+    admission_source_id: Optional[int] = Field(None, ge=0, description="Source of admission")
+    time_in_hospital: Optional[int] = Field(None, ge=0, description="Number of days spent in the hospital")
     payer_code: Optional[str] = Field(None, description="Insurance payer code")
     medical_specialty: Optional[str] = Field(None, description="Specialty of the admitting physician")
-    num_lab_procedures: Optional[int] = Field(None, description="Number of lab procedures performed")
-    num_procedures: Optional[int] = Field(None, description="Number of procedures performed")
-    num_medications: Optional[int] = Field(None, description="Number of medications prescribed")
-    number_outpatient: Optional[int] = Field(None, description="Number of outpatient visits")
-    number_emergency: Optional[int] = Field(None, description="Number of emergency visits")
-    number_inpatient: Optional[int] = Field(None, description="Number of inpatient visits")
+    num_lab_procedures: Optional[int] = Field(None, ge=0, description="Number of lab procedures performed")
+    num_procedures: Optional[int] = Field(None, ge=0, description="Number of procedures performed")
+    num_medications: Optional[int] = Field(None, ge=0, description="Number of medications prescribed")
+    number_outpatient: Optional[int] = Field(None, ge=0, description="Number of outpatient visits")
+    number_emergency: Optional[int] = Field(None, ge=0, description="Number of emergency visits")
+    number_inpatient: Optional[int] = Field(None, ge=0, description="Number of inpatient visits")
     diag_1: Optional[str] = Field(None, description="Primary diagnosis (ICD code)")
     diag_2: Optional[str] = Field(None, description="Secondary diagnosis (ICD code)")
     diag_3: Optional[str] = Field(None, description="Tertiary diagnosis (ICD code)")
-    number_diagnoses: Optional[int] = Field(None, description="Total number of diagnoses")
+    number_diagnoses: Optional[int] = Field(None, ge=0, description="Total number of diagnoses")
     max_glu_serum: Optional[str] = Field(None, description="Maximum glucose serum test result")
     A1Cresult: Optional[str] = Field(None, description="Hemoglobin A1c test result")
     metformin: Optional[str] = Field(None, description="Metformin medication status")
@@ -339,10 +339,10 @@ async def form_page():
                 <h1>Readmission Risk Prediction</h1>
                 <form action="/predict_form" method="post">
                     <label for="encounter_id">Encounter ID:</label>
-                    <input type="number" id="encounter_id" name="encounter_id">
+                    <input type="number" id="encounter_id" name="encounter_id" min="0">
 
                     <label for="patient_nbr">Patient Number:</label>
-                    <input type="number" id="patient_nbr" name="patient_nbr">
+                    <input type="number" id="patient_nbr" name="patient_nbr" min="0">
 
                     <label for="race">Race:</label>
                     <select id="race" name="race" required>
@@ -393,16 +393,16 @@ async def form_page():
                     </select>
 
                     <label for="admission_type_id">Admission Type ID:</label>
-                    <input type="number" id="admission_type_id" name="admission_type_id">
+                    <input type="number" id="admission_type_id" name="admission_type_id" min="0">
 
                     <label for="discharge_disposition_id">Discharge Disposition ID:</label>
-                    <input type="number" id="discharge_disposition_id" name="discharge_disposition_id">
+                    <input type="number" id="discharge_disposition_id" name="discharge_disposition_id" min="0">
 
                     <label for="admission_source_id">Admission Source ID:</label>
-                    <input type="number" id="admission_source_id" name="admission_source_id">
+                    <input type="number" id="admission_source_id" name="admission_source_id" min="0">
 
                     <label for="time_in_hospital">Time in Hospital:</label>
-                    <input type="number" id="time_in_hospital" name="time_in_hospital">
+                    <input type="number" id="time_in_hospital" name="time_in_hospital" min="0">
                     
                     <label for="payer_code">Payer Code:</label>
                     <input type="text" id="payer_code" name="payer_code">
@@ -411,22 +411,22 @@ async def form_page():
                     <input type="text" id="medical_specialty" name="medical_specialty">
 
                     <label for="num_lab_procedures">Number of Lab Procedures:</label>
-                    <input type="number" id="num_lab_procedures" name="num_lab_procedures">
+                    <input type="number" id="num_lab_procedures" name="num_lab_procedures" min="0">
 
                     <label for="num_procedures">Number of Procedures:</label>
-                    <input type="number" id="num_procedures" name="num_procedures">
+                    <input type="number" id="num_procedures" name="num_procedures" min="0">
 
                     <label for="num_medications">Number of Medications:</label>
-                    <input type="number" id="num_medications" name="num_medications">
+                    <input type="number" id="num_medications" name="num_medications" min="0">
 
                     <label for="number_outpatient">Number of Outpatient Visits:</label>
-                    <input type="number" id="number_outpatient" name="number_outpatient">
+                    <input type="number" id="number_outpatient" name="number_outpatient" min="0">
 
                     <label for="number_emergency">Number of Emergency Visits:</label>
-                    <input type="number" id="number_emergency" name="number_emergency">
+                    <input type="number" id="number_emergency" name="number_emergency" min="0">
 
                     <label for="number_inpatient">Number of Inpatient Visits:</label>
-                    <input type="number" id="number_inpatient" name="number_inpatient">
+                    <input type="number" id="number_inpatient" name="number_inpatient" min="0">
 
                     <label for="diag_1">Primary Diagnosis (ICD Code):</label>
                     <input type="text" id="diag_1" name="diag_1">
@@ -438,7 +438,7 @@ async def form_page():
                     <input type="text" id="diag_3" name="diag_3">
 
                     <label for="number_diagnoses">Total Number of Diagnoses:</label>
-                    <input type="number" id="number_diagnoses" name="number_diagnoses">
+                    <input type="number" id="number_diagnoses" name="number_diagnoses" min="0">
 
                     <label for="max_glu_serum">Maximum Glucose Serum:</label>
                     <input type="text" id="max_glu_serum" name="max_glu_serum">

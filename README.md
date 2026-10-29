@@ -150,3 +150,19 @@ Install `requirements-dev.txt` first, then run:
 ```powershell
 python -m pytest -q
 ```
+
+### Load test the prediction API
+
+With the API available at `http://127.0.0.1:8001` (for example, through the workflow port-forward), start an interactive Locust session:
+
+```powershell
+python -m locust -f locustfile.py --host http://127.0.0.1:8001
+```
+
+Open <http://127.0.0.1:8089> and set the user count and spawn rate. For a one-minute headless run with 10 users:
+
+```powershell
+python -m locust -f locustfile.py --host http://127.0.0.1:8001 --headless -u 10 -r 2 -t 1m
+```
+
+The Locust user posts a valid full-feature prediction request and marks non-200 responses or invalid prediction values as failures. Numeric form fields have a browser minimum of zero, and the API also rejects negative integer inputs.
