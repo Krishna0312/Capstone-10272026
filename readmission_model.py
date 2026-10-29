@@ -37,7 +37,7 @@ def make_readmission_target(df: pd.DataFrame) -> pd.DataFrame:
     if "readmitted" not in result.columns:
         raise KeyError("The dataset must include a 'readmitted' column.")
 
-    mapping = {"NO": 0, "<30": 1, ">30": 1}
+    mapping = {"NO": 0, "<30": 1, ">30": 0}
     result["readmission_30d"] = result["readmitted"].map(mapping)
     return result
 

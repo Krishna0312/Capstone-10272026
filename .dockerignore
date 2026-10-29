@@ -1,0 +1,14 @@
+.git/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+tests/
+requirements-dev.txt
+data/
+dataset_diabetes.zip
+Readmission_Risk_Model_Capstone.ipynb
+readmission_model.py
+README.md
+prompt.txt
