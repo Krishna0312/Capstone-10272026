@@ -6,7 +6,7 @@ from readmission_model import make_readmission_target, train_and_select_models
 def test_make_readmission_target_binary_mapping():
     df = pd.DataFrame({"readmitted": ["NO", ">30", "<30", "NO", ">30"]})
     result = make_readmission_target(df)
-    assert result["readmission_30d"].tolist() == [0, 1, 1, 0, 1]
+    assert result["readmission_30d"].tolist() == [0, 0, 1, 0, 0]
 
 
 def test_train_and_select_models_returns_metrics():

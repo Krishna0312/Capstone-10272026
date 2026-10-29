@@ -1,17 +1,30 @@
 import json
+import logging
+import time
+from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 import joblib
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Form, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+from prometheus_fastapi_instrumentator import Instrumentator
 
 MODEL_PATH = Path(__file__).resolve().parent.parent / "artifacts" / "final_readmission_model.joblib"
 
 
+@lru_cache(maxsize=1)
+def _load_model() -> Any:
+    return joblib.load(MODEL_PATH)
+
+
 class Features(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     encounter_id: Optional[int] = Field(None, description="Unique identifier for the encounter")
     patient_nbr: Optional[int] = Field(None, description="Unique identifier for the patient")
     race: Optional[str] = Field(None, description="Patient's race")
@@ -54,11 +67,11 @@ class Features(BaseModel):
     examide: Optional[str] = Field(None, description="Examide medication status")
     citoglipton: Optional[str] = Field(None, description="Citoglipton medication status")
     insulin: Optional[str] = Field(None, description="Insulin medication status")
-    glyburide_metformin: Optional[str] = Field(None, description="Glyburide-metformin medication status")
-    glipizide_metformin: Optional[str] = Field(None, description="Glipizide-metformin medication status")
-    glimepiride_pioglitazone: Optional[str] = Field(None, description="Glimepiride-pioglitazone medication status")
-    metformin_rosiglitazone: Optional[str] = Field(None, description="Metformin-rosiglitazone medication status")
-    metformin_pioglitazone: Optional[str] = Field(None, description="Metformin-pioglitazone medication status")
+    glyburide_metformin: Optional[str] = Field(None, alias="glyburide-metformin", description="Glyburide-metformin medication status")
+    glipizide_metformin: Optional[str] = Field(None, alias="glipizide-metformin", description="Glipizide-metformin medication status")
+    glimepiride_pioglitazone: Optional[str] = Field(None, alias="glimepiride-pioglitazone", description="Glimepiride-pioglitazone medication status")
+    metformin_rosiglitazone: Optional[str] = Field(None, alias="metformin-rosiglitazone", description="Metformin-rosiglitazone medication status")
+    metformin_pioglitazone: Optional[str] = Field(None, alias="metformin-pioglitazone", description="Metformin-pioglitazone medication status")
     change: Optional[str] = Field(None, description="Change in diabetes medication")
     diabetesMed: Optional[str] = Field(None, description="Whether the patient is on diabetes medication")
 
@@ -72,7 +85,66 @@ class PredictionResponse(BaseModel):
     status: str = "ok"
 
 
+def _prediction_features(features: Features) -> pd.DataFrame:
+    frame = pd.DataFrame([features.model_dump(by_alias=True)])
+    return frame.replace({"None": None, "nan": None, "": None})
+
+
+def _predict_features(features: Features) -> tuple[int, float]:
+    model = _load_model()
+    frame = _prediction_features(features)
+    prediction = int(model.predict(frame)[0])
+    probability = float(model.predict_proba(frame)[0, 1])
+    return prediction, probability
+
+
+logger = logging.getLogger("readmission_api")
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    logger.addHandler(handler)
+logger.propagate = False
+
+
+def log_event(event: str, **fields: Any) -> None:
+    payload = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "event": event,
+        **fields,
+    }
+    logger.info(json.dumps(payload, default=str))
+
+
 app = FastAPI(title="Readmission Risk API", version="1.0.0")
+Instrumentator().instrument(app).expose(app, include_in_schema=False, endpoint="/metrics")
+
+
+@app.middleware("http")
+async def audit_requests(request: Request, call_next):
+    request_id = uuid4().hex
+    start = time.perf_counter()
+
+    log_event(
+        "http_request_started",
+        request_id=request_id,
+        method=request.method,
+        path=request.url.path,
+    )
+
+    response = await call_next(request)
+
+    duration_ms = round((time.perf_counter() - start) * 1000, 2)
+    log_event(
+        "http_request_completed",
+        request_id=request_id,
+        method=request.method,
+        path=request.url.path,
+        status_code=response.status_code,
+        duration_ms=duration_ms,
+    )
+    return response
+
 
 @app.get("/", response_class=HTMLResponse)
 async def form_page():
@@ -515,124 +587,17 @@ async def form_page():
 
 
 @app.post("/predict_form", response_class=HTMLResponse)
-async def predict_from_form(
-    encounter_id: Optional[int] = Form(None),
-    patient_nbr: Optional[int] = Form(None),
-    race: Optional[str] = Form(None),
-    gender: Optional[str] = Form(None),
-    age: Optional[str] = Form(None),
-    weight: Optional[float] = Form(None),
-    admission_type_id: Optional[int] = Form(None),
-    discharge_disposition_id: Optional[int] = Form(None),
-    admission_source_id: Optional[int] = Form(None),
-    time_in_hospital: Optional[int] = Form(None),
-    num_lab_procedures: Optional[int] = Form(None),
-    num_procedures: Optional[int] = Form(None),
-    num_medications: Optional[int] = Form(None),
-    number_outpatient: Optional[int] = Form(None),
-    number_emergency: Optional[int] = Form(None),
-    number_inpatient: Optional[int] = Form(None),
-    diag_1: Optional[str] = Form(None),
-    diag_2: Optional[str] = Form(None),
-    diag_3: Optional[str] = Form(None),
-    number_diagnoses: Optional[int] = Form(None),
-    max_glu_serum: Optional[str] = Form(None),
-    A1Cresult: Optional[str] = Form(None),
-    metformin: Optional[str] = Form(None),
-    repaglinide: Optional[str] = Form(None),
-    nateglinide: Optional[str] = Form(None),
-    chlorpropamide: Optional[str] = Form(None),
-    glimepiride: Optional[str] = Form(None),
-    acetohexamide: Optional[str] = Form(None),
-    glipizide: Optional[str] = Form(None),
-    glyburide: Optional[str] = Form(None),
-    tolbutamide: Optional[str] = Form(None),
-    pioglitazone: Optional[str] = Form(None),
-    rosiglitazone: Optional[str] = Form(None),
-    acarbose: Optional[str] = Form(None),
-    miglitol: Optional[str] = Form(None),
-    troglitazone: Optional[str] = Form(None),
-    change: Optional[str] = Form(None),
-    diabetesMed: Optional[str] = Form(None),
-):
+async def predict_from_form(request: Request):
     """Handle form submission and make predictions."""
     if not MODEL_PATH.exists():
         raise HTTPException(status_code=503, detail="Model artifact not found. Train the model first.")
 
-    model = joblib.load(MODEL_PATH)
-    
-    # Define the required columns (based on the model's training schema)
-    required_columns = [
-        "encounter_id", "patient_nbr", "race", "gender", "age", "weight",
-        "admission_type_id", "discharge_disposition_id", "admission_source_id",
-        "time_in_hospital", "payer_code", "medical_specialty", "num_lab_procedures",
-        "num_procedures", "num_medications", "number_outpatient", "number_emergency",
-        "number_inpatient", "diag_1", "diag_2", "diag_3", "number_diagnoses",
-        "max_glu_serum", "A1Cresult", "metformin", "repaglinide", "nateglinide",
-        "chlorpropamide", "glimepiride", "acetohexamide", "glipizide", "glyburide",
-        "tolbutamide", "pioglitazone", "rosiglitazone", "acarbose", "miglitol",
-        "troglitazone", "tolazamide", "examide", "citoglipton", "insulin",
-        "glyburide-metformin", "glipizide-metformin", "glimepiride-pioglitazone",
-        "metformin-rosiglitazone", "metformin-pioglitazone", "change", "diabetesMed"
-    ]
-    # Create a DataFrame from the form data
-    feature_record = pd.DataFrame([{
-        "encounter_id": encounter_id,
-        "patient_nbr": patient_nbr,
-        "race": race,
-        "gender": gender,
-        "age": age,
-        "weight": weight,
-        "admission_type_id": admission_type_id,
-        "discharge_disposition_id": discharge_disposition_id,
-        "admission_source_id": admission_source_id,
-        "time_in_hospital": time_in_hospital,
-        "num_lab_procedures": num_lab_procedures,
-        "num_procedures": num_procedures,
-        "num_medications": num_medications,
-        "number_outpatient": number_outpatient,
-        "number_emergency": number_emergency,
-        "number_inpatient": number_inpatient,
-        "diag_1": diag_1,
-        "diag_2": diag_2,
-        "diag_3": diag_3,
-        "number_diagnoses": number_diagnoses,
-        "max_glu_serum": max_glu_serum,
-        "A1Cresult": A1Cresult,
-        "metformin": metformin,
-        "repaglinide": repaglinide,
-        "nateglinide": nateglinide,
-        "chlorpropamide": chlorpropamide,
-        "glimepiride": glimepiride,
-        "acetohexamide": acetohexamide,
-        "glipizide": glipizide,
-        "glyburide": glyburide,
-        "tolbutamide": tolbutamide,
-        "pioglitazone": pioglitazone,
-        "rosiglitazone": rosiglitazone,
-        "acarbose": acarbose,
-        "miglitol": miglitol,
-        "troglitazone": troglitazone,
-        "change": change,
-        "diabetesMed": diabetesMed,
-    }])
-
-    
-    # Ensure all required columns are present, set missing ones to None
-    for col in required_columns:
-        if col not in feature_record.columns:
-            feature_record[col] = None
-    
-    # Replace string "None" or "nan" with Python None        
-    feature_record = feature_record.replace({"None": None, "nan": None})
-    
-    # Ensure all column names are strings
-    feature_record.columns = feature_record.columns.astype(str)
-
-
-    # Make predictions
-    prediction = int(model.predict(feature_record)[0])
-    probability = float(model.predict_proba(feature_record)[0, 1])
+    form_data = await request.form()
+    features = Features.model_validate({
+        key: None if value == "" else value
+        for key, value in form_data.items()
+    })
+    prediction, probability = _predict_features(features)
 
     # Return the result as an HTML response
     return f"""
@@ -651,48 +616,41 @@ async def predict_from_form(
 
 @app.get("/health")
 def health_check() -> Dict[str, str]:
+    log_event("health_check", status="ok")
     return {"status": "ok"}
 
 
 @app.post("/predict", response_model=PredictionResponse)
 def predict_risk(payload: PredictionRequest):
+    patient_id = payload.features.patient_nbr
+    encounter_id = payload.features.encounter_id
+    log_event(
+        "prediction_request_received",
+        patient_nbr=patient_id,
+        encounter_id=encounter_id,
+        endpoint="/predict",
+    )
+
     if not MODEL_PATH.exists():
+        log_event(
+            "prediction_failed",
+            patient_nbr=patient_id,
+            encounter_id=encounter_id,
+            reason="model_not_found",
+            status_code=503,
+        )
         raise HTTPException(status_code=503, detail="Model artifact not found. Train the model first.")
 
-    model = joblib.load(MODEL_PATH)
-    
-    # Define the required columns (based on the model's training schema)
-    required_columns = [
-        "encounter_id", "patient_nbr", "race", "gender", "age", "weight",
-        "admission_type_id", "discharge_disposition_id", "admission_source_id",
-        "time_in_hospital", "payer_code", "medical_specialty", "num_lab_procedures",
-        "num_procedures", "num_medications", "number_outpatient", "number_emergency",
-        "number_inpatient", "diag_1", "diag_2", "diag_3", "number_diagnoses",
-        "max_glu_serum", "A1Cresult", "metformin", "repaglinide", "nateglinide",
-        "chlorpropamide", "glimepiride", "acetohexamide", "glipizide", "glyburide",
-        "tolbutamide", "pioglitazone", "rosiglitazone", "acarbose", "miglitol",
-        "troglitazone", "tolazamide", "examide", "citoglipton", "insulin",
-        "glyburide-metformin", "glipizide-metformin", "glimepiride-pioglitazone",
-        "metformin-rosiglitazone", "metformin-pioglitazone", "change", "diabetesMed"
-    ]
+    prediction, probability = _predict_features(payload.features)
 
-    feature_record = pd.DataFrame([payload.features])
-    
-    # Ensure all required columns are present, set missing ones to None
-    for col in required_columns:
-        if col not in feature_record.columns:
-            feature_record[col] = None
-    
-    # Replace string "None" or "nan" with Python None        
-    feature_record = feature_record.replace({"None": None, "nan": None})
-    
-    # Ensure all column names are strings
-    feature_record.columns = feature_record.columns.astype(str)
-
-
-    # Make predictions
-    prediction = int(model.predict(feature_record)[0])
-    probability = float(model.predict_proba(feature_record)[0, 1])
+    log_event(
+        "prediction_completed",
+        patient_nbr=patient_id,
+        encounter_id=encounter_id,
+        prediction=prediction,
+        probability=probability,
+        model_name="readmission_risk_model",
+    )
 
     return PredictionResponse(
         prediction=prediction,

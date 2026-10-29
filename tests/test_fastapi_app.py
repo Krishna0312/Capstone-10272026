@@ -75,3 +75,41 @@ def test_health_endpoint_returns_ok():
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
+
+def test_model_loader_caches_loaded_model(monkeypatch):
+    from app import main
+
+    main._load_model.cache_clear()
+    loads = []
+    sentinel = object()
+
+    def fake_load(path):
+        loads.append(path)
+        return sentinel
+
+    monkeypatch.setattr(main.joblib, "load", fake_load)
+    try:
+        assert main._load_model() is sentinel
+        assert main._load_model() is sentinel
+        assert len(loads) == 1
+    finally:
+        main._load_model.cache_clear()
+
+
+def test_prediction_form_accepts_model_fields():
+    response = client.post(
+        "/predict_form",
+        data={
+            "race": "Caucasian",
+            "gender": "Female",
+            "age": "[50-60)",
+            "payer_code": "MC",
+            "medical_specialty": "Cardiology",
+            "tolazamide": "Steady",
+            "glyburide-metformin": "Steady",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "Prediction Result" in response.text
