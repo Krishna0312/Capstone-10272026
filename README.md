@@ -6,6 +6,30 @@ FastAPI service that returns readmission risk predictions using the model in `ar
 
 Requirements: Python 3.12+ and Docker (optional for the Docker workflow).
 
+### Start or stop the complete local workflow
+
+The cross-platform Python scripts below start model training and create local port-forwards to the existing Kubernetes API and monitoring services. Ensure the Kubernetes cluster and the `readmission-risk-api`, `grafana`, and `prometheus` services are running first. Install the project dependencies, then run these commands from the repository root on Windows, macOS, or Linux:
+
+```powershell
+python start_all.py
+```
+
+```bash
+python3 start_all.py
+```
+
+Use the matching Python command to stop only the training and port-forward processes started by the start script:
+
+```powershell
+python stop_all.py
+```
+
+```bash
+python3 stop_all.py
+```
+
+The scripts write logs and process state under `.run/`. They leave processes that were already running alone; they also avoid starting another training run if one is already active. Stopping training early discards its unfinished work. Training updates the model artifact on the local machine; rebuilding and redeploying the API image is required for the Kubernetes API to use that newly trained model.
+
 Install the full development and training environment, then run the API:
 
 ```powershell
@@ -83,13 +107,13 @@ Open <http://127.0.0.1:3001>. The configured initial Grafana credentials are `ad
 
 Import the dashboard using **Dashboards → New → Import**, then select `k8s/readmission-api-grafana-dashboard.json`. The datasource is named `Prometheus`. Dashboard query data appears after Prometheus scrapes the app and requests have reached the API. The error-rate panel can be empty when no 4xx or 5xx requests have occurred.
 
-To access Prometheus locally, use a separate terminal:
+The start script forwards Prometheus to port `9091`. To create the same forward manually, use:
 
 ```powershell
-kubectl port-forward -n monitoring svc/prometheus 9090:9090
+kubectl port-forward -n monitoring svc/prometheus 9091:9090
 ```
 
-Then open <http://127.0.0.1:9090/targets> and confirm the `readmission-api` target is `UP`.
+Then open <http://127.0.0.1:9091/targets> and confirm the `readmission-api` target is `UP`.
 
 If a local port is already in use, choose another local port, for example `13001:3000` for Grafana or `19090:9090` for Prometheus.
 
