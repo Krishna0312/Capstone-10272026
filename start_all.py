@@ -32,6 +32,12 @@ SERVICES = [
         "match": ["port-forward", "svc/prometheus", "9091:9090"],
         "port": 9091,
     },
+    {
+        "name": "pushgateway",
+        "command": ["kubectl", "port-forward", "-n", "monitoring", "svc/pushgateway", "9092:9091"],
+        "match": ["port-forward", "svc/pushgateway", "9092:9091"],
+        "port": 9092,
+    },
 ]
 
 
@@ -107,6 +113,7 @@ def _validate_kubernetes() -> None:
         ("default", "readmission-risk-api"),
         ("monitoring", "grafana"),
         ("monitoring", "prometheus"),
+        ("monitoring", "pushgateway"),
     ):
         subprocess.run(
             ["kubectl", "get", "service", service, "-n", namespace],
@@ -210,6 +217,19 @@ def main() -> int:
                 raise RuntimeError(
                     f"{service['name']} did not open port {service['port']} within 15 seconds."
                 )
+
+        capture_match = ["capture_startup.py"]
+        if any(_matches(process, capture_match) for process in processes):
+            print("Startup capture is already running; leaving it untouched.")
+        elif any(record["name"] == "startup-capture" for record in active_owned):
+            print("Startup capture was already started by this script.")
+        else:
+            _launch(
+                "startup-capture",
+                [sys.executable, "-u", str(ROOT / "capture_startup.py")],
+                capture_match,
+                state,
+            )
 
         if state["processes"]:
             _save_state(state)
