@@ -1,5 +1,6 @@
 import json
 import os
+import time
 import zipfile
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -213,11 +214,12 @@ def _candidate_models() -> List[Tuple[str, object]]:
         (
             "random_forest",
             RandomForestClassifier(
-                n_estimators=400,
+                n_estimators=100,
                 max_depth=None,
                 min_samples_leaf=5,
                 class_weight="balanced",
                 random_state=42,
+                n_jobs=2,
             ),
         ),
         (
@@ -252,6 +254,8 @@ def train_and_select_models(
 
     models: Dict[str, Dict[str, object]] = {}
     for model_name, estimator in _candidate_models():
+        fit_start = time.perf_counter()
+        print(f"Training {model_name}...", flush=True)
         model_pipeline = Pipeline(
             steps=[
                 ("preprocessor", _build_preprocessor(X_train)),
@@ -259,6 +263,10 @@ def train_and_select_models(
             ]
         )
         model_pipeline.fit(X_train, y_train)
+        print(
+            f"Finished {model_name} training in {time.perf_counter() - fit_start:.1f}s.",
+            flush=True,
+        )
 
         train_prob = model_pipeline.predict_proba(X_train)[:, 1]
         val_prob = model_pipeline.predict_proba(X_val)[:, 1]
@@ -287,7 +295,14 @@ def train_and_select_models(
     train_val_X = pd.concat([X_train, X_val], ignore_index=True)
     train_val_y = pd.concat([y_train, y_val], ignore_index=True)
     retrained_pipeline = clone(best_pipeline)
+    refit_start = time.perf_counter()
+    print(f"Retraining selected model: {best_model_name}...", flush=True)
     retrained_pipeline.fit(train_val_X, train_val_y)
+    print(
+        f"Finished final {best_model_name} training in "
+        f"{time.perf_counter() - refit_start:.1f}s.",
+        flush=True,
+    )
 
     test_prob = retrained_pipeline.predict_proba(X_test)[:, 1]
     test_pred = retrained_pipeline.predict(X_test)
