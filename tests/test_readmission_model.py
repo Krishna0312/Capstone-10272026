@@ -1,5 +1,6 @@
 import pandas as pd
 
+import readmission_model
 from readmission_model import make_readmission_target, train_and_select_models
 
 
@@ -29,3 +30,36 @@ def test_train_and_select_models_returns_metrics():
     assert "train_metrics" in summary
     assert "validation_auc" in summary["test_metrics"]
     assert summary["best_model_name"] in summary["models"]
+
+
+def test_run_training_pipeline_saves_unique_artifacts(tmp_path, monkeypatch):
+    summary = {
+        "best_model_name": "logistic_regression",
+        "best_model": object(),
+        "validation_auc": 0.8,
+        "test_metrics": {"accuracy": 0.8},
+    }
+    saved_paths = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(readmission_model, "load_hospital_readmission_data", lambda data_dir: pd.DataFrame())
+    monkeypatch.setattr(readmission_model, "describe_dataset", lambda df: {})
+    monkeypatch.setattr(readmission_model, "plot_eda", lambda df: {})
+    monkeypatch.setattr(readmission_model, "train_and_select_models", lambda df, target_col: summary)
+    monkeypatch.setattr(
+        readmission_model,
+        "save_model_artifact",
+        lambda model, output_path: saved_paths.append(output_path) or output_path,
+    )
+    monkeypatch.setattr(
+        readmission_model,
+        "save_evaluation_report",
+        lambda model_summary, output_path: saved_paths.append(output_path) or output_path,
+    )
+
+    first_run = readmission_model.run_training_pipeline()
+    second_run = readmission_model.run_training_pipeline()
+
+    assert first_run["model_artifact"] != second_run["model_artifact"]
+    assert first_run["report_path"] != second_run["report_path"]
+    assert all(path.startswith("artifacts/readmission_model_") for path in saved_paths)
+    assert first_run["model_artifact"] != "artifacts/final_readmission_model.joblib"

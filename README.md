@@ -28,7 +28,7 @@ python stop_all.py
 python3 stop_all.py
 ```
 
-The scripts write logs and process state under `.run/`. They leave processes that were already running alone; they also avoid starting another training run if one is already active. The startup capture records each API, Prometheus, and Grafana pod's creation-to-ready duration in `.run/logs/cold_starts.jsonl` and publishes the latest timings to Prometheus through Pushgateway. Apply `k8s/monitoring.yaml` to install Pushgateway and configure Prometheus to scrape it, then re-import the updated Grafana dashboard to see the **Application Cold Start** panel. The watcher records existing ready pods on startup and newly created pods; it measures Kubernetes pod startup through readiness, not first-prediction model loading. Stopping training early discards its unfinished work. Training updates the model artifact on the local machine; rebuilding and redeploying the API image is required for the Kubernetes API to use that newly trained model.
+The scripts write logs and process state under `.run/`. They leave processes that were already running alone; they also avoid starting another training run if one is already active. The startup capture records each API, Prometheus, and Grafana pod's creation-to-ready duration in `.run/logs/cold_starts.jsonl` and publishes the latest timings to Prometheus through Pushgateway. Apply `k8s/monitoring.yaml` to install Pushgateway and configure Prometheus to scrape it, then re-import the updated Grafana dashboard to see the **Application Cold Start** panel. The watcher records existing ready pods on startup and newly created pods; it measures Kubernetes pod startup through readiness, not first-prediction model loading. Stopping training early discards its unfinished work. Each new training run saves a uniquely named model and matching evaluation report in `artifacts/`, preserving earlier runs. The API continues using `artifacts/final_readmission_model.joblib`; rebuilding and redeploying the API image is required for the API to use a different model.
 
 Install the full development and training environment, then run the API:
 
@@ -87,15 +87,30 @@ docker cp $archive desktop-control-plane:/root/readmission-risk-api.tar
 docker exec desktop-control-plane ctr -n k8s.io images import /root/readmission-risk-api.tar
 docker exec desktop-control-plane rm -f /root/readmission-risk-api.tar
 Remove-Item $archive
-kubectl set image deployment/readmission-risk-api -n default "readmission-risk-api=readmission-risk-api:$tag"
-kubectl rollout status deployment/readmission-risk-api -n default
+python deploy_with_rollback.py "readmission-risk-api:$tag"
 ```
 
-Update the `image` value in `k8s/readmission-api.yml` to the same new tag so future `kubectl apply` commands keep using that build.
+The deployment script waits for rollout success and attempts `kubectl rollout undo` if the new version fails. It publishes the last rollback result to Pushgateway; start the complete workflow first so the Pushgateway port-forward is available on `127.0.0.1:9092`. Update the `image` value in `k8s/readmission-api.yml` to the same new tag so future `kubectl apply` commands keep using that build.
 
 ## Monitoring and Grafana
 
 Prometheus scrapes `readmission-risk-api.default.svc.cluster.local:8000/metrics` every 15 seconds. Grafana's default Prometheus datasource is provisioned by `k8s/monitoring.yaml`.
+
+The dashboard reports the following service success metrics:
+
+- **p95 latency:** API request latency by route and overall; the overall p95 uses the high-resolution histogram.
+- **Cold-start time:** Kubernetes pod creation to readiness, captured by `capture_startup.py`.
+- **SLO adherence:** Over a rolling 7-day window, at least 99.5% of requests must avoid a 5xx response and p95 latency must be at most 500 ms. 4xx responses count as available requests.
+- **Rollback success:** The latest rollback attempt is shown as succeeded or failed. Deployments must use `deploy_with_rollback.py` for this event to be measured.
+- **Audit-log coverage:** Terminal audit events (completed or failed) divided by started HTTP request audit events over the last 5 minutes. A failed request is covered when its failure is logged.
+
+Rebuild and redeploy the API after changing its instrumentation so Prometheus receives the new audit and latency metrics. To load the SLO recording rules and dashboard updates, apply `k8s/monitoring.yaml`, restart Prometheus, and re-import `k8s/readmission-api-grafana-dashboard.json`:
+
+```powershell
+kubectl apply -f k8s/monitoring.yaml
+kubectl rollout restart deployment/prometheus -n monitoring
+kubectl rollout status deployment/prometheus -n monitoring
+```
 
 To access Grafana locally, run this in a PowerShell terminal and leave it running:
 

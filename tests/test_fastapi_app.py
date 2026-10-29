@@ -77,6 +77,17 @@ def test_health_endpoint_returns_ok():
     assert response.json()["status"] == "ok"
 
 
+def test_metrics_include_request_audit_events():
+    client.get("/health")
+
+    response = client.get("/metrics")
+
+    assert response.status_code == 200
+    assert 'readmission_audit_events_total{event="started"}' in response.text
+    assert 'readmission_audit_events_total{event="completed"}' in response.text
+    assert "http_request_duration_highr_seconds_bucket" in response.text
+
+
 def test_model_loader_caches_loaded_model(monkeypatch):
     from app import main
 

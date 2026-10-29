@@ -12,9 +12,16 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field
+from prometheus_client import Counter
 from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_fastapi_instrumentator.metrics import default as default_metrics
 
 MODEL_PATH = Path(__file__).resolve().parent.parent / "artifacts" / "final_readmission_model.joblib"
+AUDIT_EVENTS = Counter(
+    "readmission_audit_events",
+    "HTTP request audit events emitted by the API.",
+    labelnames=("event",),
+)
 
 
 @lru_cache(maxsize=1)
@@ -117,7 +124,33 @@ def log_event(event: str, **fields: Any) -> None:
 
 
 app = FastAPI(title="Readmission Risk API", version="1.0.0")
-Instrumentator().instrument(app).expose(app, include_in_schema=False, endpoint="/metrics")
+Instrumentator().add(
+    default_metrics(
+        latency_lowr_buckets=(
+            0.01,
+            0.025,
+            0.05,
+            0.075,
+            0.1,
+            0.25,
+            0.5,
+            0.75,
+            1,
+            1.5,
+            2,
+            2.5,
+            3,
+            3.5,
+            4,
+            4.5,
+            5,
+            7.5,
+            10,
+            30,
+            60,
+        )
+    )
+).instrument(app).expose(app, include_in_schema=False, endpoint="/metrics")
 
 
 @app.middleware("http")
@@ -131,8 +164,20 @@ async def audit_requests(request: Request, call_next):
         method=request.method,
         path=request.url.path,
     )
+    AUDIT_EVENTS.labels(event="started").inc()
 
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception as error:
+        log_event(
+            "http_request_failed",
+            request_id=request_id,
+            method=request.method,
+            path=request.url.path,
+            error_type=type(error).__name__,
+        )
+        AUDIT_EVENTS.labels(event="failed").inc()
+        raise
 
     duration_ms = round((time.perf_counter() - start) * 1000, 2)
     log_event(
@@ -143,6 +188,7 @@ async def audit_requests(request: Request, call_next):
         status_code=response.status_code,
         duration_ms=duration_ms,
     )
+    AUDIT_EVENTS.labels(event="completed").inc()
     return response
 
 
