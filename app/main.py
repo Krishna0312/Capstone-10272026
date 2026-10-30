@@ -2,6 +2,8 @@ import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.responses import HTMLResponse
 
 from app.auth import bootstrap_admin, cookie_secure
 from app.data_store import get_data_store
@@ -40,9 +42,50 @@ async def lifespan(_: FastAPI):
                 pass
 
 
-app = FastAPI(title="Readmission Risk API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(
+    title="Readmission Risk API",
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url=None,
+)
 configure_observability(app)
 app.include_router(router)
+
+
+@app.get("/docs", include_in_schema=False, response_class=HTMLResponse)
+async def swagger_ui() -> HTMLResponse:
+    response = get_swagger_ui_html(
+        openapi_url=app.openapi_url or "/openapi.json",
+        title=f"{app.title} - Swagger UI",
+        swagger_ui_parameters={"withCredentials": True},
+    )
+    html = response.body.decode("utf-8")
+    swagger_config = """const ui = SwaggerUIBundle({
+    requestInterceptor: async (request) => {
+        const method = (request.method || "GET").toUpperCase();
+        if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+            const csrfResponse = await fetch(
+                new URL("auth/csrf", window.location.href),
+                { credentials: "same-origin" }
+            );
+            if (csrfResponse.ok) {
+                const csrf = await csrfResponse.json();
+                request.headers = request.headers || {};
+                request.headers["X-CSRF-Token"] = csrf.csrf_token;
+            }
+        }
+        return request;
+    },
+"""
+    marker = "const ui = SwaggerUIBundle({"
+    if marker not in html:
+        raise RuntimeError("Could not configure the Swagger UI request interceptor.")
+    html = html.replace(marker, swagger_config, 1)
+    return HTMLResponse(
+        html,
+        headers={"Cache-Control": "no-store"},
+    )
+
 
 __all__ = [
     "AUDIT_EVENTS",

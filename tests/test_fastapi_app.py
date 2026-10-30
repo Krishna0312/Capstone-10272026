@@ -539,6 +539,16 @@ def test_json_api_can_retrieve_session_csrf_token(authenticated_client):
     assert response.json()["csrf_token"] == client.headers["X-CSRF-Token"]
 
 
+def test_swagger_ui_attaches_session_csrf_token_for_mutating_requests():
+    response = client.get("/docs")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert '"withCredentials": true' in response.text
+    assert 'new URL("auth/csrf", window.location.href)' in response.text
+    assert 'request.headers["X-CSRF-Token"] = csrf.csrf_token' in response.text
+
+
 def test_admin_can_create_and_disable_accounts(authenticated_client):
     store = authenticated_client
     admin_page = client.get("/admin/users")
