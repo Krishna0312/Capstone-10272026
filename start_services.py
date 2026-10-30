@@ -182,19 +182,6 @@ def main() -> int:
                     f"Local port {service['port']} is already in use by another process."
                 )
 
-        model_match = ["readmission_model.py"]
-        if any(_matches(process, model_match) for process in processes):
-            print("Readmission training is already running; leaving it untouched.")
-        elif any(record["name"] == "training" for record in active_owned):
-            print("Readmission training was already started by this script.")
-        else:
-            _launch(
-                "training",
-                [sys.executable, str(ROOT / "readmission_model.py")],
-                model_match,
-                state,
-            )
-
         for service in SERVICES:
             if any(_matches(process, service["match"]) for process in processes):
                 print(f"{service['name']} port-forward is already running; leaving it untouched.")

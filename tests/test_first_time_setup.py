@@ -61,3 +61,21 @@ def test_new_kubernetes_secret_reuses_compose_admin_credentials():
     assert decoded["AUTH_BOOTSTRAP_ADMIN_USERNAME"] == "first-admin"
     assert decoded["AUTH_BOOTSTRAP_ADMIN_PASSWORD"] == "known-bootstrap-password"
     assert "known-bootstrap-password" not in first_time_setup._secret_manifest(secret_values)
+
+
+def test_install_monitoring_applies_manifest_and_waits_for_all_services(monkeypatch):
+    commands = []
+    monkeypatch.setattr(first_time_setup, "_run", lambda args, **kwargs: commands.append(args))
+
+    first_time_setup._install_monitoring()
+
+    assert commands[0] == ["kubectl", "apply", "-f", "k8s/monitoring.yaml"]
+    assert [
+        command[3]
+        for command in commands[1:]
+    ] == [
+        "deployment/prometheus",
+        "deployment/grafana",
+        "deployment/pushgateway",
+    ]
+    assert all(command[4:7] == ["-n", "monitoring", "--timeout=300s"] for command in commands[1:])

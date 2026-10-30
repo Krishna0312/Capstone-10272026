@@ -10,7 +10,7 @@ Requirements: Python 3.12+ and Docker (optional for the Docker workflow).
 
 ### Start or stop the complete local workflow
 
-The cross-platform Python scripts below start model training and create local port-forwards to the existing Kubernetes API and monitoring services. Ensure the Kubernetes cluster and the `readmission-risk-api`, `grafana`, and `prometheus` services are running first. Install the project dependencies, then run these commands from the repository root on Windows, macOS, or Linux:
+The cross-platform Python scripts below create local port-forwards to the Kubernetes API and monitoring services, and capture pod startup times. They do **not** start model training. Run `python first_time_setup.py --target kubernetes` first; it installs MySQL, the API, Grafana, Prometheus, and Pushgateway, then waits for them to become ready. Once setup completes, run `start_services.py` from the repository root on Windows, macOS, or Linux:
 
 ```powershell
 python start_services.py
@@ -20,7 +20,7 @@ python start_services.py
 python3 start_services.py
 ```
 
-Use the matching Python command to stop only the training and port-forward processes started by the start script:
+Use the matching Python command to stop the local processes recorded by the start script (port-forwards and startup capture; it can also stop training recorded by older script versions):
 
 ```powershell
 python stop_services.py
@@ -30,7 +30,7 @@ python stop_services.py
 python3 stop_services.py
 ```
 
-The scripts write logs and process state under `.run/`. They leave processes that were already running alone; they also avoid starting another training run if one is already active. The startup capture records each API, Prometheus, and Grafana pod's creation-to-ready duration in `.run/logs/cold_starts.jsonl` and publishes the latest timings to Prometheus through Pushgateway. Apply `k8s/monitoring.yaml` to install Pushgateway and configure Prometheus to scrape it, then re-import the updated Grafana dashboard to see the **Application Cold Start** panel. The watcher records existing ready pods on startup and newly created pods; it measures Kubernetes pod startup through readiness, not first-prediction model loading. Stopping training early discards its unfinished work. Each new training run saves a uniquely named model and matching evaluation report in `artifacts/`, preserving earlier runs. The API loads `artifacts/final_readmission_model.joblib` at startup; rebuild and redeploy the API image after changing that artifact.
+The scripts write logs and process state under `.run/`. They leave processes that were already running alone. The startup capture records each API, Prometheus, and Grafana pod's creation-to-ready duration in `.run/logs/cold_starts.jsonl` and publishes the latest timings to Prometheus through Pushgateway. Re-import the updated Grafana dashboard to see the **Application Cold Start** panel. The watcher records existing ready pods on startup and newly created pods; it measures Kubernetes pod startup through readiness, not first-prediction model loading. To train a model, run `python readmission_model.py` separately; each training run saves a uniquely named model and matching evaluation report in `artifacts/`, preserving earlier runs. The API loads `artifacts/final_readmission_model.joblib` at startup; rebuild and redeploy the API image after changing that artifact.
 
 The current main model is the Random Forest in `artifacts/final_readmission_model.joblib`; its evaluation is `artifacts/model_evaluation_report.json`. The previous Gradient Boosting model is preserved as `artifacts/backup_gradient_boosting_model.joblib`, with metrics in `artifacts/backup_gradient_boosting_evaluation.json`. This backup is kept for manual promotion; API inference does not automatically fail over between models.
 
@@ -42,17 +42,48 @@ python -m pip install -r requirements-dev.txt
 
 ### First-time setup
 
-Run the setup script from the repository root and choose the environment to initialize:
+On a fresh checkout, install the dependencies, make sure Docker is running, and
+run **one** setup command from the repository root for the environment you want:
 
 ```powershell
+# Choose one:
 python first_time_setup.py --target compose
 python first_time_setup.py --target kubernetes
-python first_time_setup.py --target both
 ```
 
-The script creates a local `.env` for Compose when needed, generates missing secrets without replacing configured values, starts MySQL and the API, and checks `/health`. For Kubernetes, it creates the database Secret only when absent, applies MySQL, builds and loads the API image specified in `k8s/readmission-api.yml`, deploys the API, and verifies health. It will not overwrite an existing Kubernetes Secret; if a Secret exists but lacks required keys, the script stops and identifies the missing key names.
+Use `--target both` instead only if you intentionally want to set up both environments. Compose setup creates a local `.env` when needed, generates missing secrets without replacing configured values, starts MySQL and the API, and checks `/health`. Kubernetes setup creates the database Secret only when absent, applies MySQL, builds and loads the API image specified in `k8s/readmission-api.yml`, deploys the API, verifies health, then installs Grafana, Prometheus, and Pushgateway. It waits for the monitoring workloads to become ready. It will not overwrite an existing Kubernetes Secret; if a Secret exists but lacks required keys, the script stops and identifies the missing key names.
 
-Kubernetes setup requires an active cluster selected in `kubectl`, Docker, and a cluster that can load a locally built image (Docker Desktop Kubernetes or kind). Ensure the cluster has a default StorageClass for the MySQL volume. The generated bootstrap credentials are saved in `.run/first_time_credentials.json`, which is ignored by Git; keep that file private. The bootstrap password initializes an admin only when one does not already exist. For Kubernetes, run `python start_services.py` after setup to open the API at <http://127.0.0.1:8001/login>.
+For **Kubernetes**, first ensure Docker Desktop Kubernetes or kind is running,
+`kubectl` is pointed at that cluster, and a default StorageClass is available
+for the MySQL volume. To start the API and dashboards without running
+individual `kubectl` commands, use this script sequence:
+
+```powershell
+python first_time_setup.py --target kubernetes
+python start_services.py
+```
+
+`start_services.py` opens the API at <http://127.0.0.1:8001/login>, Grafana at
+<http://127.0.0.1:3001>, and Prometheus at <http://127.0.0.1:9091>. Keep its
+terminal open. The generated bootstrap credentials are saved in
+`.run/first_time_credentials.json`, which is ignored by Git; keep the file
+private. The bootstrap password initializes an admin only when one does not
+already exist.
+
+For API-only access after setup, use this optional command:
+
+```powershell
+kubectl port-forward -n default svc/readmission-risk-api 8001:8000
+```
+
+`start_services.py` is the recommended script-based workflow for API and
+dashboard access. It also starts pod startup-time capture but does not start
+model training. Use `python readmission_model.py` separately only when you want
+to train a model. See
+[Start or stop the complete local workflow](#start-or-stop-the-complete-local-workflow)
+for shutdown instructions.
+
+For **Compose**, setup starts the API on <http://127.0.0.1:8000/login> directly.
 
 ### Run the API with MySQL request/audit storage
 

@@ -327,18 +327,21 @@ encryption key, and bootstrap-admin credentials are read from the
 `readmission-db-credentials` Secret in the `default` namespace. The API has
 startup, readiness, and liveness probes against `/health`.
 
-After the API and monitoring services are running, `start_services.py`:
+`first_time_setup.py --target kubernetes` installs MySQL, the API, Prometheus,
+Grafana, and Pushgateway, then waits for the workloads to become ready. After
+setup, `start_services.py`:
 
-- Starts the readmission model training script if it is not already running.
 - Creates local port-forwards for the API (`8001`), Grafana (`3001`),
   Prometheus (`9091`), and Pushgateway (`9092`).
 - Starts the Kubernetes pod startup-time capture process.
 - Leaves matching processes already running untouched and records processes
   it starts under `.run/`, with logs under `.run/logs/`.
 
-`stop_services.py` stops only processes recorded as started by that script; it
-does not stop unrelated processes. Stopping a training run early discards
-unfinished training work.
+`start_services.py` does not start model training. Run
+`python readmission_model.py` separately when you want to train a model.
+`stop_services.py` stops only processes recorded as started by the service
+script; it does not stop unrelated processes. It can still stop a training
+process recorded by an older version of the script.
 
 ## 8. Monitoring and performance testing
 

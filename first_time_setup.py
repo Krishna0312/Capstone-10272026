@@ -261,6 +261,22 @@ def _wait_for_url(url: str, timeout: int = 180) -> None:
     raise RuntimeError(f"Service did not become ready at {url}: {last_error}")
 
 
+def _install_monitoring() -> None:
+    _run(["kubectl", "apply", "-f", "k8s/monitoring.yaml"])
+    for deployment in ("prometheus", "grafana", "pushgateway"):
+        _run(
+            [
+                "kubectl",
+                "rollout",
+                "status",
+                f"deployment/{deployment}",
+                "-n",
+                "monitoring",
+                "--timeout=300s",
+            ]
+        )
+
+
 def _kubernetes_setup(compose_settings: dict[str, str] | None = None) -> None:
     for command in ("docker", "kubectl"):
         if not shutil.which(command):
@@ -344,7 +360,11 @@ def _kubernetes_setup(compose_settings: dict[str, str] | None = None) -> None:
             ),
         ]
     )
-    print("Kubernetes API is ready at /health; run start_services.py for the local port-forward.")
+    _install_monitoring()
+    print(
+        "Kubernetes API and monitoring services are ready; "
+        "run start_services.py to open local API and dashboard URLs."
+    )
     if compose_settings is not None:
         print("Kubernetes bootstrap credentials match the local Compose .env values.")
 
