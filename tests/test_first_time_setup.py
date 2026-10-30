@@ -20,7 +20,9 @@ def test_compose_environment_generates_secrets_and_preserves_them(tmp_path, monk
     assert settings["MYSQL_PASSWORD"] != "replace-with-a-strong-random-password"
     Fernet(settings["APP_DATA_ENCRYPTION_KEY"].encode("ascii"))
     assert len(settings["AUTH_BOOTSTRAP_ADMIN_PASSWORD"]) >= 12
+    assert len(settings["GRAFANA_ADMIN_PASSWORD"]) >= 12
     first_password = settings["AUTH_BOOTSTRAP_ADMIN_PASSWORD"]
+    first_grafana_password = settings["GRAFANA_ADMIN_PASSWORD"]
     first_time_setup._save_credentials(
         "compose",
         settings["AUTH_BOOTSTRAP_ADMIN_USERNAME"],
@@ -33,6 +35,42 @@ def test_compose_environment_generates_secrets_and_preserves_them(tmp_path, monk
 
     assert not generated_password
     assert rerun_settings["AUTH_BOOTSTRAP_ADMIN_PASSWORD"] == first_password
+    assert rerun_settings["GRAFANA_ADMIN_PASSWORD"] == first_grafana_password
+
+
+def test_compose_setup_waits_for_api_and_monitoring_services(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    credentials_file = tmp_path / "credentials.json"
+    commands = []
+    urls = []
+    monkeypatch.setattr(first_time_setup, "COMPOSE_ENV", env_file)
+    monkeypatch.setattr(first_time_setup, "CREDENTIALS_FILE", credentials_file)
+    monkeypatch.setattr(first_time_setup.shutil, "which", lambda _: "docker")
+    monkeypatch.setattr(first_time_setup, "_run", lambda args, **kwargs: commands.append(args))
+    monkeypatch.setattr(first_time_setup, "_wait_for_url", urls.append)
+
+    first_time_setup._compose_setup()
+
+    assert commands == [["docker", "compose", "up", "--build", "-d"]]
+    assert urls == [
+        "http://127.0.0.1:8000/health",
+        "http://127.0.0.1:3001/api/health",
+        "http://127.0.0.1:9091/-/ready",
+        "http://127.0.0.1:9092/-/healthy",
+    ]
+
+
+def test_compose_setup_rejects_invalid_port_before_starting_services(monkeypatch):
+    commands = []
+    settings = {"API_PORT": "70000"}
+    monkeypatch.setattr(first_time_setup, "_ensure_compose_env", lambda: (settings, False))
+    monkeypatch.setattr(first_time_setup.shutil, "which", lambda _: "docker")
+    monkeypatch.setattr(first_time_setup, "_run", lambda args, **kwargs: commands.append(args))
+
+    with pytest.raises(RuntimeError, match="API_PORT"):
+        first_time_setup._compose_setup()
+
+    assert commands == []
 
 
 def test_existing_kubernetes_secret_is_never_replaced_or_incompletely_accepted():

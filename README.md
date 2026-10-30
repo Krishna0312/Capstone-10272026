@@ -8,29 +8,61 @@ For a complete explanation of the application's browser, API, authentication, to
 
 Requirements: Python 3.12+ and Docker (optional for the Docker workflow).
 
-### Start or stop the complete local workflow
+### Start or stop local services
 
-The cross-platform Python scripts below create local port-forwards to the Kubernetes API and monitoring services, and capture pod startup times. They do **not** start model training. Run `python first_time_setup.py --target kubernetes` first; it installs MySQL, the API, Grafana, Prometheus, and Pushgateway, then waits for them to become ready. Once setup completes, run `start_services.py` from the repository root on Windows, macOS, or Linux:
+Choose the scripts for the environment you want to run. First-time setup
+installs the required services; use the matching start and stop scripts for
+subsequent starts and stops.
+
+For **Kubernetes**, run `python first_time_setup.py --target kubernetes` once.
+Then start local port-forwards and startup-time capture:
 
 ```powershell
-python start_services.py
+python start_kube_services.py
 ```
 
 ```bash
-python3 start_services.py
+python3 start_kube_services.py
 ```
 
-Use the matching Python command to stop the local processes recorded by the start script (port-forwards and startup capture; it can also stop training recorded by older script versions):
+Stop the port-forwards and startup capture with:
 
 ```powershell
-python stop_services.py
+python stop_kube_services.py
 ```
 
 ```bash
-python3 stop_services.py
+python3 stop_kube_services.py
 ```
 
-The scripts write logs and process state under `.run/`. They leave processes that were already running alone. The startup capture records each API, Prometheus, and Grafana pod's creation-to-ready duration in `.run/logs/cold_starts.jsonl` and publishes the latest timings to Prometheus through Pushgateway. Re-import the updated Grafana dashboard to see the **Application Cold Start** panel. The watcher records existing ready pods on startup and newly created pods; it measures Kubernetes pod startup through readiness, not first-prediction model loading. To train a model, run `python readmission_model.py` separately; each training run saves a uniquely named model and matching evaluation report in `artifacts/`, preserving earlier runs. The API loads `artifacts/final_readmission_model.joblib` at startup; rebuild and redeploy the API image after changing that artifact.
+These scripts stop only the local Kubernetes port-forwards and startup-capture
+process; Kubernetes workloads remain deployed. Logs and process state are
+stored under `.run/`. Startup capture records API, Prometheus, and Grafana pod
+creation-to-ready times and publishes the latest timings through Pushgateway.
+
+For **Docker Compose**, run `python first_time_setup.py --target compose` once
+to generate local secrets and start the stack. For later starts and stops:
+
+```powershell
+python start_docker_services.py
+python stop_docker_services.py
+```
+
+```bash
+python3 start_docker_services.py
+python3 stop_docker_services.py
+```
+
+The Docker stop script runs `docker compose down`; it stops the containers
+while preserving named volumes. Do not run both environments on their default
+monitoring ports at the same time. Stop one environment's local access scripts
+before starting the other, or change the Docker `*_PORT` values in `.env`.
+
+Neither environment's service scripts start model training. To train a model,
+run `python readmission_model.py` separately. Each run saves a uniquely named
+model and evaluation report in `artifacts/`, preserving earlier runs. The API
+loads `artifacts/final_readmission_model.joblib` at startup; rebuild and
+redeploy the API image after changing that artifact.
 
 The current main model is the Random Forest in `artifacts/final_readmission_model.joblib`; its evaluation is `artifacts/model_evaluation_report.json`. The previous Gradient Boosting model is preserved as `artifacts/backup_gradient_boosting_model.joblib`, with metrics in `artifacts/backup_gradient_boosting_evaluation.json`. This backup is kept for manual promotion; API inference does not automatically fail over between models.
 
@@ -51,7 +83,7 @@ python first_time_setup.py --target compose
 python first_time_setup.py --target kubernetes
 ```
 
-Use `--target both` instead only if you intentionally want to set up both environments. Compose setup creates a local `.env` when needed, generates missing secrets without replacing configured values, starts MySQL and the API, and checks `/health`. Kubernetes setup creates the database Secret only when absent, applies MySQL, builds and loads the API image specified in `k8s/readmission-api.yml`, deploys the API, verifies health, then installs Grafana, Prometheus, and Pushgateway. It waits for the monitoring workloads to become ready. It will not overwrite an existing Kubernetes Secret; if a Secret exists but lacks required keys, the script stops and identifies the missing key names.
+Use `--target both` instead only if you intentionally want to set up both environments. Compose setup creates a local `.env` when needed, generates missing secrets without replacing configured values, starts MySQL, the API, Prometheus, Grafana, and Pushgateway, then checks that each service is ready. Kubernetes setup creates the database Secret only when absent, applies MySQL, builds and loads the API image specified in `k8s/readmission-api.yml`, deploys the API, verifies health, then installs Grafana, Prometheus, and Pushgateway. It waits for the monitoring workloads to become ready. It will not overwrite an existing Kubernetes Secret; if a Secret exists but lacks required keys, the script stops and identifies the missing key names.
 
 For **Kubernetes**, first ensure Docker Desktop Kubernetes or kind is running,
 `kubectl` is pointed at that cluster, and a default StorageClass is available
@@ -60,10 +92,10 @@ individual `kubectl` commands, use this script sequence:
 
 ```powershell
 python first_time_setup.py --target kubernetes
-python start_services.py
+python start_kube_services.py
 ```
 
-`start_services.py` opens the API at <http://127.0.0.1:8001/login>, Grafana at
+`start_kube_services.py` opens the API at <http://127.0.0.1:8001/login>, Grafana at
 <http://127.0.0.1:3001>, and Prometheus at <http://127.0.0.1:9091>. Keep its
 terminal open. The generated bootstrap credentials are saved in
 `.run/first_time_credentials.json`, which is ignored by Git; keep the file
@@ -76,20 +108,40 @@ For API-only access after setup, use this optional command:
 kubectl port-forward -n default svc/readmission-risk-api 8001:8000
 ```
 
-`start_services.py` is the recommended script-based workflow for API and
-dashboard access. It also starts pod startup-time capture but does not start
-model training. Use `python readmission_model.py` separately only when you want
-to train a model. See
-[Start or stop the complete local workflow](#start-or-stop-the-complete-local-workflow)
-for shutdown instructions.
+The Kubernetes service scripts also start pod startup-time capture but do not
+start model training. Use `python readmission_model.py` separately only when
+you want to train a model. See
+[Start or stop local services](#start-or-stop-local-services) for shutdown
+instructions.
 
-For **Compose**, setup starts the API on <http://127.0.0.1:8000/login> directly.
+For **Compose**, setup starts the API on <http://127.0.0.1:8000/login>, Grafana
+on <http://127.0.0.1:3001>, Prometheus on <http://127.0.0.1:9091>, and
+Pushgateway on <http://127.0.0.1:9092>. Use `python start_docker_services.py`
+and `python stop_docker_services.py` for subsequent starts and stops.
+Grafana's initial admin password is the `GRAFANA_ADMIN_PASSWORD` value in the
+ignored `.env` file. Stop Kubernetes port-forwards with
+`python stop_kube_services.py` before using Compose's default monitoring
+ports, or change the corresponding `*_PORT` values in `.env`.
 
 ### Run the API with MySQL request/audit storage
 
-The Compose stack runs MySQL with a persistent Docker volume and configures the API to store encrypted request and response bodies, audit events, and per-request status/latency records. Prometheus remains the time-series metrics backend for the existing dashboards. Payload and audit details are encrypted in the application with a Fernet key; keep that key secret and backed up, since losing it makes stored payloads unreadable. Database metadata such as timestamps, endpoint paths, and status codes is not encrypted.
+The Compose stack runs MySQL, the API, Prometheus, Grafana, and Pushgateway.
+MySQL, Prometheus, Grafana, and Pushgateway data use persistent Docker volumes.
+Prometheus scrapes the API and Pushgateway, and Grafana automatically provisions
+the Prometheus datasource and existing readmission dashboard. Payload and audit
+details are encrypted in the application with a Fernet key; keep that key
+secret and backed up, since losing it makes stored payloads unreadable. Database
+metadata such as timestamps, endpoint paths, and status codes is not encrypted.
 
-Create a local `.env` file and replace the example values with unique, strong secrets. Choose a bootstrap administrator username and password of at least 12 characters; the initial admin account is created the first time the API connects to MySQL and is not reset on later restarts. If you already have a `.env`, add the auth variables from `.env.example` without replacing your existing secrets. Generate an encryption key after installing the development requirements:
+For automatic secret generation and readiness checks on a fresh checkout, use
+`python first_time_setup.py --target compose` as described above. For manual
+configuration, create `.env` and replace all example placeholders with unique,
+strong secrets, including `GRAFANA_ADMIN_PASSWORD`. Choose a bootstrap
+administrator username and password of at least 12 characters; the initial
+admin account is created the first time the API connects to MySQL and is not
+reset on later restarts. If you already have a `.env`, add the auth and Grafana
+variables from `.env.example` without replacing your existing secrets. Generate
+an encryption key after installing the development requirements:
 
 ```powershell
 Copy-Item .env.example .env
@@ -102,6 +154,13 @@ Set the generated key as `APP_DATA_ENCRYPTION_KEY` in `.env`, then start the sta
 docker compose up --build -d
 docker compose ps
 ```
+
+Open Grafana at <http://127.0.0.1:3001> and, on first initialization of its
+volume, sign in as `admin` using `GRAFANA_ADMIN_PASSWORD` from `.env`. The
+readmission dashboard is provisioned automatically. Prometheus is available at
+<http://127.0.0.1:9091> and Pushgateway at <http://127.0.0.1:9092>. Compose's
+Docker scrape config targets the API by service name; Kubernetes pod-startup
+capture is Kubernetes-only.
 
 The sign-in page is at <http://127.0.0.1:8000/login>; use the bootstrap admin account to sign in and open **Account management** to create, disable, or reset user accounts. Passwords are stored as scrypt hashes. Browser sessions expire after 8 hours, use HttpOnly/SameSite cookies, and prediction requests require CSRF protection. `AUTH_COOKIE_SECURE=true` requires HTTPS except on localhost; use HTTPS before exposing the service to other machines. The JSON prediction endpoint accepts the same authenticated session cookie; obtain its CSRF header value from `GET /auth/csrf`.
 
@@ -118,7 +177,7 @@ curl.exe -X POST "https://your-api.example.com/predict" `
 
 The JSON file must contain a `features` object with `race`, `gender`, `age`, `admission_type_id`, `discharge_disposition_id`, `admission_source_id`, and `time_in_hospital`; see `/docs` for the full request schema. API tokens are stored as hashes, expire after 90 days, and are revoked when their account is disabled or its password is reset. Use HTTPS for external access.
 
-The API is available at <http://127.0.0.1:8000>. Stop the containers with `docker compose down`; the named `mysql_data` volume is retained. `docker compose down -v` deletes the database volume, user accounts, sessions, and records. Records older than 30 days and expired sessions are purged at startup and daily. Do not commit `.env` or expose MySQL outside the Docker network. For full disk-level protection, also use encrypted host storage for Docker volumes.
+The API is available at <http://127.0.0.1:8000>. Stop the containers with `docker compose down`; named volumes are retained. `docker compose down -v` deletes MySQL data and monitoring history. Records older than 30 days and expired sessions are purged at startup and daily. Do not commit `.env` or expose MySQL outside the Docker network. For full disk-level protection, also use encrypted host storage for Docker volumes.
 
 If port 8000 is already occupied, set `API_PORT` in `.env` (for example, `API_PORT=18080`) and use that port for the API URL.
 

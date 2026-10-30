@@ -295,8 +295,9 @@ python first_time_setup.py --target both
 ```
 
 Choose one target. Compose setup creates or fills missing `.env` secrets
-without replacing configured values, starts MySQL and the API, and checks
-`/health`. Kubernetes setup checks cluster access, creates a database Secret
+without replacing configured values, starts MySQL, the API, Prometheus,
+Grafana, and Pushgateway, and waits for each service to become ready.
+Kubernetes setup checks cluster access, creates a database Secret
 only when needed, applies MySQL, builds and loads the image named in the API
 manifest, deploys the API, and checks rollout and health. An existing Secret
 missing required keys is reported rather than silently replaced.
@@ -307,17 +308,28 @@ is created only once and its password is not reset on later restarts.
 
 ### Docker Compose
 
-Compose runs MySQL 8.4 with a persistent named `mysql_data` volume and the API.
-Set the required credentials and encryption key in `.env`, then run:
+Compose runs MySQL 8.4, the API, Prometheus, Grafana, and Pushgateway. Each
+service's state is retained in named volumes. `first_time_setup.py --target
+`python first_time_setup.py --target compose` generates missing database, API,
+encryption, and Grafana credentials in `.env`; keep this ignored file private.
+MySQL, Prometheus, Grafana, and Pushgateway data use named volumes. To start or
+update the full stack manually:
 
 ```powershell
 docker compose up --build -d
 docker compose ps
 ```
 
-The default API URL is `http://127.0.0.1:8000`. Set `API_PORT` in `.env` to
-change the host port. `docker compose down` stops containers but preserves the
-database volume; `docker compose down -v` deletes it and its stored data.
+The API, Grafana, Prometheus, and Pushgateway are available at
+`http://127.0.0.1:8000`, `http://127.0.0.1:3001`,
+`http://127.0.0.1:9091`, and `http://127.0.0.1:9092`, respectively. Sign in to
+Grafana as `admin` with `GRAFANA_ADMIN_PASSWORD` from `.env`; the Prometheus
+datasource and dashboard are provisioned automatically. Host ports can be
+changed with `API_PORT`, `GRAFANA_PORT`, `PROMETHEUS_PORT`, and
+`PUSHGATEWAY_PORT`. If Kubernetes port-forwards are running on the monitoring
+ports, stop them before starting Compose or configure different ports.
+`docker compose down` stops containers but preserves their volumes;
+`docker compose down -v` deletes database data and monitoring history.
 
 ### Kubernetes and local port-forwards
 
@@ -329,7 +341,7 @@ startup, readiness, and liveness probes against `/health`.
 
 `first_time_setup.py --target kubernetes` installs MySQL, the API, Prometheus,
 Grafana, and Pushgateway, then waits for the workloads to become ready. After
-setup, `start_services.py`:
+setup, `start_kube_services.py`:
 
 - Creates local port-forwards for the API (`8001`), Grafana (`3001`),
   Prometheus (`9091`), and Pushgateway (`9092`).
@@ -337,22 +349,28 @@ setup, `start_services.py`:
 - Leaves matching processes already running untouched and records processes
   it starts under `.run/`, with logs under `.run/logs/`.
 
-`start_services.py` does not start model training. Run
+`start_kube_services.py` does not start model training. Run
 `python readmission_model.py` separately when you want to train a model.
-`stop_services.py` stops only processes recorded as started by the service
-script; it does not stop unrelated processes. It can still stop a training
-process recorded by an older version of the script.
+`stop_kube_services.py` stops the local port-forwards and startup capture but
+does not stop the Kubernetes deployments. The older `start_services.py` and
+`stop_services.py` names remain as aliases for the Kubernetes scripts.
+
+For Docker Compose, use `start_docker_services.py` and
+`stop_docker_services.py`. The stop script runs `docker compose down` and
+preserves named volumes. Do not run the Kubernetes port-forwards and Docker
+services on the same default host ports simultaneously.
 
 ## 8. Monitoring and performance testing
 
 ### Prometheus and Grafana
 
-Prometheus scrapes the API's `/metrics` endpoint every 15 seconds. The
-monitoring manifests install Prometheus, Grafana, and Pushgateway, with a
-provisioned Prometheus datasource. The dashboard includes:
+Prometheus scrapes the API's `/metrics` endpoint every 15 seconds. Both
+Kubernetes and Compose install Prometheus, Grafana, and Pushgateway, with a
+provisioned Prometheus datasource and readmission dashboard. Compose scrapes
+the API by its Docker service name. The dashboard includes:
 
 - API latency, including p95 latency by route and overall.
-- Kubernetes pod creation-to-readiness time for the API, Prometheus, and
+- Kubernetes-only pod creation-to-readiness time for the API, Prometheus, and
   Grafana. `capture_startup.py` records these measurements in
   `.run/logs/cold_starts.jsonl` and publishes them to Pushgateway. This measures
   pod readiness, not model loading or first-prediction latency.
