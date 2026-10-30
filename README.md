@@ -11,24 +11,26 @@ Requirements: Python 3.12+ and Docker (optional for the Docker workflow).
 The cross-platform Python scripts below start model training and create local port-forwards to the existing Kubernetes API and monitoring services. Ensure the Kubernetes cluster and the `readmission-risk-api`, `grafana`, and `prometheus` services are running first. Install the project dependencies, then run these commands from the repository root on Windows, macOS, or Linux:
 
 ```powershell
-python start_all.py
+python start_services.py
 ```
 
 ```bash
-python3 start_all.py
+python3 start_services.py
 ```
 
 Use the matching Python command to stop only the training and port-forward processes started by the start script:
 
 ```powershell
-python stop_all.py
+python stop_services.py
 ```
 
 ```bash
-python3 stop_all.py
+python3 stop_services.py
 ```
 
-The scripts write logs and process state under `.run/`. They leave processes that were already running alone; they also avoid starting another training run if one is already active. The startup capture records each API, Prometheus, and Grafana pod's creation-to-ready duration in `.run/logs/cold_starts.jsonl` and publishes the latest timings to Prometheus through Pushgateway. Apply `k8s/monitoring.yaml` to install Pushgateway and configure Prometheus to scrape it, then re-import the updated Grafana dashboard to see the **Application Cold Start** panel. The watcher records existing ready pods on startup and newly created pods; it measures Kubernetes pod startup through readiness, not first-prediction model loading. Stopping training early discards its unfinished work. Each new training run saves a uniquely named model and matching evaluation report in `artifacts/`, preserving earlier runs. The API continues using `artifacts/final_readmission_model.joblib`; rebuilding and redeploying the API image is required for the API to use a different model.
+The scripts write logs and process state under `.run/`. They leave processes that were already running alone; they also avoid starting another training run if one is already active. The startup capture records each API, Prometheus, and Grafana pod's creation-to-ready duration in `.run/logs/cold_starts.jsonl` and publishes the latest timings to Prometheus through Pushgateway. Apply `k8s/monitoring.yaml` to install Pushgateway and configure Prometheus to scrape it, then re-import the updated Grafana dashboard to see the **Application Cold Start** panel. The watcher records existing ready pods on startup and newly created pods; it measures Kubernetes pod startup through readiness, not first-prediction model loading. Stopping training early discards its unfinished work. Each new training run saves a uniquely named model and matching evaluation report in `artifacts/`, preserving earlier runs. The API loads `artifacts/final_readmission_model.joblib` at startup; rebuild and redeploy the API image after changing that artifact.
+
+The current main model is the Random Forest in `artifacts/final_readmission_model.joblib`; its evaluation is `artifacts/model_evaluation_report.json`. The previous Gradient Boosting model is preserved as `artifacts/backup_gradient_boosting_model.joblib`, with metrics in `artifacts/backup_gradient_boosting_evaluation.json`. This backup is kept for manual promotion; API inference does not automatically fail over between models.
 
 Install the full development and training environment, then run the API:
 
@@ -44,6 +46,81 @@ docker build -t readmission-risk-api:metrics .
 docker run --rm -p 8000:8000 readmission-risk-api:metrics
 ```
 
+### Run the API with MySQL request/audit storage
+
+The Compose stack runs MySQL with a persistent Docker volume and configures the API to store encrypted request and response bodies, audit events, and per-request status/latency records. Prometheus remains the time-series metrics backend for the existing dashboards. Payload and audit details are encrypted in the application with a Fernet key; keep that key secret and backed up, since losing it makes stored payloads unreadable. Database metadata such as timestamps, endpoint paths, and status codes is not encrypted.
+
+Create a local `.env` file and replace the example values with strong secrets. Generate an encryption key after installing the development requirements:
+
+```powershell
+Copy-Item .env.example .env
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Set the generated key as `APP_DATA_ENCRYPTION_KEY` in `.env`, then start the stack:
+
+```powershell
+docker compose up --build -d
+docker compose ps
+```
+
+The API is available at <http://127.0.0.1:8000>. Stop the containers with `docker compose down`; the named `mysql_data` volume is retained. `docker compose down -v` deletes the database volume and all records. Records older than 30 days are purged at startup and daily. Do not commit `.env` or expose MySQL outside the Docker network. For full disk-level protection, also use encrypted host storage for Docker volumes.
+
+If port 8000 is already occupied, set `API_PORT` in `.env` (for example, `API_PORT=18080`) and use that port for the API URL.
+
+#### Inspect stored requests and audit events
+
+Open a MySQL shell inside the Compose network; enter the `MYSQL_PASSWORD` from `.env` when prompted:
+
+```powershell
+docker compose exec mysql mysql -ureadmission_app -p readmission
+```
+
+List tables and inspect recent request metadata (payloads are encrypted blobs):
+
+```sql
+SHOW TABLES;
+SELECT request_id, method, path, status_code, duration_ms, created_at
+FROM api_request_records
+ORDER BY created_at DESC
+LIMIT 20;
+
+SELECT request_id, event_type, occurred_at
+FROM api_audit_events
+ORDER BY occurred_at DESC
+LIMIT 20;
+```
+
+To decrypt the newest request payloads locally, run this from the repository root after setting the same `APP_DATA_ENCRYPTION_KEY` in your environment (PowerShell loads it from `.env` only when Compose is run, so copy the value into the current shell without committing it):
+
+```powershell
+$env:APP_DATA_ENCRYPTION_KEY = '<the APP_DATA_ENCRYPTION_KEY value from .env>'
+@'
+from cryptography.fernet import Fernet
+from sqlalchemy import create_engine, select
+from app.data_store import request_records
+import os
+
+engine = create_engine(
+    "mysql+pymysql://readmission_app:<URL-encode MYSQL_PASSWORD>@127.0.0.1:3306/readmission"
+)
+cipher = Fernet(os.environ["APP_DATA_ENCRYPTION_KEY"].encode("ascii"))
+with engine.connect() as connection:
+    rows = connection.execute(
+        select(request_records.c.request_id, request_records.c.request_payload,
+               request_records.c.response_payload)
+        .order_by(request_records.c.created_at.desc())
+        .limit(10)
+    )
+    for row in rows:
+        print(row.request_id)
+        print("request:", cipher.decrypt(row.request_payload).decode("utf-8", errors="replace"))
+        print("response:", cipher.decrypt(row.response_payload).decode("utf-8", errors="replace"))
+'@ | python -
+```
+
+For a host-side SQLAlchemy connection, temporarily publish MySQL by adding `"3306:3306"` under the MySQL service's `ports` in `compose.yaml`; do not expose that port on an untrusted network. URL-encode the database password when placing it in `DATABASE_URL`. The Fernet key is required to decrypt records; keep it private, back it up separately, and do not paste decrypted health data into logs or shared terminals.
+
 API pages and endpoints:
 
 - Form: <http://127.0.0.1:8000/>
@@ -52,27 +129,66 @@ API pages and endpoints:
 - Health: <http://127.0.0.1:8000/health>
 - Prometheus metrics: <http://127.0.0.1:8000/metrics>
 
-## Deploy to Docker Desktop Kubernetes
+## Development checks
 
-The manifests expect the API image `readmission-risk-api:metrics` to be available to the Kubernetes node. Docker Desktop Kubernetes uses containerd, so building an image in Docker alone may leave the cluster using an older cached image. The following PowerShell commands build and import the image into the `desktop-control-plane` node, then apply the application and monitoring manifests:
+Install the development dependencies with `python -m pip install -r requirements-dev.txt`, then run:
 
 ```powershell
-docker build -t readmission-risk-api:metrics .
+python -m pytest
+python -m ruff check .
+```
+
+The API is organized under `app/`: `main.py` creates the FastAPI application, `routes.py` defines endpoints, `schemas.py` defines request and response models, `prediction.py` handles model inference, `observability.py` configures metrics and audit logging, `data_store.py` persists encrypted request and audit records, and `templates/` contains the prediction form.
+
+The prediction form groups fields into patient, admission, clinical-history, lab-result, and diabetes-medication sections. Race, gender, age, admission type, discharge disposition, admission source, and time in hospital are required in both the form and JSON API; encounter ID, patient number, and weight remain optional.
+
+Patient-level examples scored from the source dataset are kept locally in `examples/readmission_probability_examples.json`. They are intentionally excluded from version control and Docker build contexts.
+
+Each new training run writes train, validation, and test metrics for every candidate model to its evaluation JSON. Candidate selection remains based on validation ROC AUC, with validation F1 as the tie-breaker; the selected model's refit test metrics are also recorded at the report's top level.
+
+## Deploy to Docker Desktop Kubernetes
+
+The API manifest currently references `readmission-risk-api:random-forest-main-20261029-2103`. Docker Desktop Kubernetes uses containerd, so building an image in Docker alone may leave the cluster using an older cached image. First follow **Configure MySQL storage in Kubernetes** below to create credentials and deploy MySQL and the API. Then apply the monitoring manifest:
+
+```powershell
+docker build -t readmission-risk-api:random-forest-main-20261029-2103 .
 $archive = Join-Path $env:TEMP 'readmission-risk-api.tar'
-docker save -o $archive readmission-risk-api:metrics
+docker save -o $archive readmission-risk-api:random-forest-main-20261029-2103
 docker cp $archive desktop-control-plane:/root/readmission-risk-api.tar
 docker exec desktop-control-plane ctr -n k8s.io images import /root/readmission-risk-api.tar
 docker exec desktop-control-plane rm -f /root/readmission-risk-api.tar
 Remove-Item $archive
 
-kubectl apply -f k8s/readmission-api.yml
 kubectl apply -f k8s/monitoring.yaml
-kubectl rollout status deployment/readmission-risk-api -n default
 kubectl rollout status deployment/prometheus -n monitoring
 kubectl rollout status deployment/grafana -n monitoring
 ```
 
 The `desktop-control-plane` image-import commands are specific to this Docker Desktop Kubernetes setup. For another Kubernetes cluster, push the image to a registry accessible by the nodes and update the image in `k8s/readmission-api.yml`.
+
+### Configure MySQL storage in Kubernetes
+
+Generate credentials and the application encryption key, then create/update the Kubernetes Secret before applying the MySQL and API manifests:
+
+```powershell
+$dbRootPassword = [guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')
+$dbPassword = [guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')
+$encryptionKey = python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+$databaseUrl = "mysql+pymysql://readmission_app:$dbPassword@mysql.default.svc.cluster.local:3306/readmission?charset=utf8mb4"
+kubectl create secret generic readmission-db-credentials `
+  --from-literal="MYSQL_ROOT_PASSWORD=$dbRootPassword" `
+  --from-literal="MYSQL_PASSWORD=$dbPassword" `
+  --from-literal="DATABASE_URL=$databaseUrl" `
+  --from-literal="APP_DATA_ENCRYPTION_KEY=$encryptionKey" `
+  --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl apply -f k8s/mysql.yaml
+kubectl rollout status statefulset/mysql -n default
+kubectl apply -f k8s/readmission-api.yml
+kubectl rollout status deployment/readmission-risk-api -n default
+```
+
+The MySQL StatefulSet uses a 5 GiB persistent volume claim. Ensure the cluster has a default StorageClass or update the claim with the appropriate class. Request/response and audit payloads are application-encrypted; configure Kubernetes Secret encryption at rest and encrypted persistent volumes for protection of credentials and database metadata.
 
 ### Rebuild the API image
 

@@ -1,3 +1,5 @@
+import json
+
 import pandas as pd
 
 import readmission_model
@@ -30,6 +32,45 @@ def test_train_and_select_models_returns_metrics():
     assert "train_metrics" in summary
     assert "validation_auc" in summary["test_metrics"]
     assert summary["best_model_name"] in summary["models"]
+    assert set(summary["models"]) == {
+        "logistic_regression",
+        "random_forest",
+        "gradient_boosting",
+    }
+    for model_metrics in summary["models"].values():
+        assert set(model_metrics) == {"train_metrics", "validation_metrics", "test_metrics"}
+        for metrics in model_metrics.values():
+            assert {"accuracy", "precision", "recall", "f1", "roc_auc"} <= set(metrics)
+
+
+def test_save_evaluation_report_includes_metrics_for_each_candidate(tmp_path):
+    summary = {
+        "best_model_name": "random_forest",
+        "validation_auc": 0.81,
+        "test_metrics": {"accuracy": 0.75, "roc_auc": 0.78, "validation_auc": 0.81},
+        "models": {
+            name: {
+                metric_name: {
+                    "accuracy": 0.7,
+                    "precision": 0.6,
+                    "recall": 0.5,
+                    "f1": 0.54,
+                    "roc_auc": 0.8,
+                }
+                for metric_name in ("train_metrics", "validation_metrics", "test_metrics")
+            }
+            for name in ("logistic_regression", "random_forest", "gradient_boosting")
+        },
+    }
+    report_path = tmp_path / "evaluation.json"
+
+    readmission_model.save_evaluation_report(summary, str(report_path))
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+
+    assert report["best_model_name"] == "random_forest"
+    assert set(report["models"]) == set(summary["models"])
+    assert report["models"]["logistic_regression"]["validation_metrics"]["roc_auc"] == 0.8
+    assert report["models"]["gradient_boosting"]["test_metrics"]["f1"] == 0.54
 
 
 def test_run_training_pipeline_saves_unique_artifacts(tmp_path, monkeypatch):
