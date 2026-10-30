@@ -31,7 +31,7 @@ LOGIN_HTML = files("app").joinpath("templates/login.html").read_text(encoding="u
 ADMIN_HTML = files("app").joinpath("templates/admin_users.html").read_text(encoding="utf-8")
 
 
-@router.get("/", response_class=HTMLResponse)
+@router.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def form_page(request: Request):
     session = optional_session(request)
     if session is None:
@@ -58,7 +58,7 @@ def _login_response(csrf_token: str, message: str = "", status_code: int = 200) 
     return response
 
 
-@router.get("/login", response_class=HTMLResponse)
+@router.get("/login", response_class=HTMLResponse, include_in_schema=False)
 async def login_page(request: Request):
     session = optional_session(request)
     if session is not None:
@@ -66,7 +66,7 @@ async def login_page(request: Request):
     return _login_response(secrets.token_urlsafe(32))
 
 
-@router.post("/login")
+@router.post("/login", include_in_schema=False)
 async def login(request: Request):
     form = await request.form()
     csrf_token = form.get("csrf_token")
@@ -122,7 +122,7 @@ async def login(request: Request):
     return response
 
 
-@router.post("/predict_form", response_model=PredictionResponse)
+@router.post("/predict_form", response_model=PredictionResponse, include_in_schema=False)
 async def predict_from_form(
     request: Request,
     session: AuthSession = Depends(require_session),
@@ -150,14 +150,14 @@ async def predict_from_form(
     )
 
 
-@router.get("/auth/csrf")
+@router.get("/auth/csrf", include_in_schema=False)
 async def get_csrf_token(
     session: AuthSession = Depends(require_session),
 ) -> dict[str, str]:
     return {"csrf_token": session.csrf_token}
 
 
-@router.post("/logout")
+@router.post("/logout", include_in_schema=False)
 async def logout(
     request: Request,
     session: AuthSession = Depends(require_session),
@@ -177,7 +177,7 @@ async def logout(
     return response
 
 
-@router.get("/admin/users", response_class=HTMLResponse)
+@router.get("/admin/users", response_class=HTMLResponse, include_in_schema=False)
 async def admin_users_page(
     session: AuthSession = Depends(require_admin),
 ):
@@ -214,7 +214,7 @@ async def admin_users_page(
     return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
-@router.post("/admin/users")
+@router.post("/admin/users", include_in_schema=False)
 async def manage_users(
     request: Request,
     session: AuthSession = Depends(require_admin),

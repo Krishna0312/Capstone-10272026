@@ -72,7 +72,7 @@ docker compose ps
 
 The sign-in page is at <http://127.0.0.1:8000/login>; use the bootstrap admin account to sign in and open **Account management** to create, disable, or reset user accounts. Passwords are stored as scrypt hashes. Browser sessions expire after 8 hours, use HttpOnly/SameSite cookies, and prediction requests require CSRF protection. `AUTH_COOKIE_SECURE=true` requires HTTPS except on localhost; use HTTPS before exposing the service to other machines. The JSON prediction endpoint accepts the same authenticated session cookie; obtain its CSRF header value from `GET /auth/csrf`.
 
-Swagger UI supports authenticated predictions too: sign in at `/login` in the same browser and host, then open `/docs`. The UI sends the session cookie and automatically obtains and attaches the CSRF header for mutating requests.
+Swagger UI supports authenticated predictions too: sign in at `/login` in the same browser and host, then open `/docs`. Unauthenticated requests to `/docs` and `/openapi.json` redirect to sign-in. The schema shows only the prediction and health endpoints; browser login, logout, account management, and form routes are omitted. The UI sends the session cookie and automatically obtains and attaches the CSRF header for mutating requests.
 
 The API is available at <http://127.0.0.1:8000>. Stop the containers with `docker compose down`; the named `mysql_data` volume is retained. `docker compose down -v` deletes the database volume, user accounts, sessions, and records. Records older than 30 days and expired sessions are purged at startup and daily. Do not commit `.env` or expose MySQL outside the Docker network. For full disk-level protection, also use encrypted host storage for Docker volumes.
 

@@ -1,11 +1,11 @@
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
 from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from app.auth import bootstrap_admin, cookie_secure
+from app.auth import bootstrap_admin, cookie_secure, optional_session
 from app.data_store import get_data_store
 from app.observability import AUDIT_EVENTS, configure_observability, log_event
 from app.prediction import MODEL_PATH, _load_model
@@ -47,15 +47,18 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
     docs_url=None,
+    openapi_url=None,
 )
 configure_observability(app)
 app.include_router(router)
 
 
 @app.get("/docs", include_in_schema=False, response_class=HTMLResponse)
-async def swagger_ui() -> HTMLResponse:
+async def swagger_ui(request: Request) -> Response:
+    if optional_session(request) is None:
+        return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
     response = get_swagger_ui_html(
-        openapi_url=app.openapi_url or "/openapi.json",
+        openapi_url="/openapi.json",
         title=f"{app.title} - Swagger UI",
         swagger_ui_parameters={"withCredentials": True},
     )
@@ -85,6 +88,13 @@ async def swagger_ui() -> HTMLResponse:
         html,
         headers={"Cache-Control": "no-store"},
     )
+
+
+@app.get("/openapi.json", include_in_schema=False, response_class=JSONResponse)
+async def openapi_schema(request: Request) -> Response:
+    if optional_session(request) is None:
+        return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+    return JSONResponse(app.openapi())
 
 
 __all__ = [

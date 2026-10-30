@@ -549,6 +549,22 @@ def test_swagger_ui_attaches_session_csrf_token_for_mutating_requests():
     assert 'request.headers["X-CSRF-Token"] = csrf.csrf_token' in response.text
 
 
+def test_swagger_and_openapi_redirect_unauthenticated_clients_to_login():
+    client.cookies.clear()
+
+    for path in ("/docs", "/openapi.json"):
+        response = client.get(path, follow_redirects=False)
+        assert response.status_code == 303
+        assert response.headers["location"] == "/login"
+
+
+def test_openapi_schema_hides_login_and_browser_management_routes():
+    response = client.get("/openapi.json")
+
+    assert response.status_code == 200
+    assert set(response.json()["paths"]) == {"/health", "/predict"}
+
+
 def test_admin_can_create_and_disable_accounts(authenticated_client):
     store = authenticated_client
     admin_page = client.get("/admin/users")
