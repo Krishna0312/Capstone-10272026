@@ -2,6 +2,8 @@
 
 FastAPI service that returns readmission risk predictions using the model in `artifacts/`. The API exposes request metrics for Prometheus and is configured for Kubernetes deployment with Grafana dashboards.
 
+For a complete explanation of the application's browser, API, authentication, token, storage, model, monitoring, setup, and deployment functionality, see the [Functionality Guide](FUNCTIONALITY.md).
+
 ## Run Locally
 
 Requirements: Python 3.12+ and Docker (optional for the Docker workflow).
