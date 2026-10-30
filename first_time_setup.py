@@ -92,6 +92,7 @@ def _ensure_compose_env() -> tuple[dict[str, str], bool]:
         "APP_DATA_ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
         "AUTH_BOOTSTRAP_ADMIN_USERNAME": "admin",
         "AUTH_BOOTSTRAP_ADMIN_PASSWORD": secrets.token_urlsafe(32),
+        "GRAFANA_ADMIN_PASSWORD": secrets.token_urlsafe(32),
         "AUTH_COOKIE_SECURE": "true",
     }
     placeholders = ("replace-with-", "generate-a-fernet-key")
@@ -129,12 +130,25 @@ def _compose_setup() -> None:
             settings["AUTH_BOOTSTRAP_ADMIN_USERNAME"],
             settings["AUTH_BOOTSTRAP_ADMIN_PASSWORD"],
         )
+    endpoints = (
+        ("API_PORT", "8000", "/health", "API"),
+        ("GRAFANA_PORT", "3001", "/api/health", "Grafana"),
+        ("PROMETHEUS_PORT", "9091", "/-/ready", "Prometheus"),
+        ("PUSHGATEWAY_PORT", "9092", "/-/healthy", "Pushgateway"),
+    )
+    for setting, default_port, _, _ in endpoints:
+        port = settings.get(setting, default_port)
+        if not port.isdecimal() or not 1 <= int(port) <= 65535:
+            raise RuntimeError(f"{setting} in .env must be a port number between 1 and 65535.")
+
     _run(["docker", "compose", "up", "--build", "-d"])
-    port = settings.get("API_PORT", "8000")
-    if not port.isdecimal() or not 1 <= int(port) <= 65535:
-        raise RuntimeError("API_PORT in .env must be a port number between 1 and 65535.")
-    _wait_for_url(f"http://127.0.0.1:{port}/health")
-    print(f"Compose API is ready: http://127.0.0.1:{port}/login")
+    for setting, default_port, path, service in endpoints:
+        port = settings.get(setting, default_port)
+        _wait_for_url(f"http://127.0.0.1:{port}{path}")
+        print(f"{service} is ready: http://127.0.0.1:{port}")
+    print(f"Compose API sign-in: http://127.0.0.1:{settings.get('API_PORT', '8000')}/login")
+    print(f"Grafana dashboard: http://127.0.0.1:{settings.get('GRAFANA_PORT', '3001')}")
+    print(f"Prometheus: http://127.0.0.1:{settings.get('PROMETHEUS_PORT', '9091')}")
     if generated_password:
         print(f"New Compose admin credentials saved privately in {CREDENTIALS_FILE}.")
 
@@ -363,7 +377,7 @@ def _kubernetes_setup(compose_settings: dict[str, str] | None = None) -> None:
     _install_monitoring()
     print(
         "Kubernetes API and monitoring services are ready; "
-        "run start_services.py to open local API and dashboard URLs."
+        "run start_kube_services.py to open local API and dashboard URLs."
     )
     if compose_settings is not None:
         print("Kubernetes bootstrap credentials match the local Compose .env values.")
