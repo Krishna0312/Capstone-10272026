@@ -1,0 +1,38 @@
+#!/bin/sh
+set -eu
+
+branch=
+commit=
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    case "$remote_ref" in
+        refs/heads/master|refs/heads/chakri)
+            case "$local_sha" in
+                *[!0]*)
+                    target_branch=${remote_ref#refs/heads/}
+                    if [ "$local_ref" != "refs/heads/$target_branch" ]; then
+                        echo "Push gate only supports pushing a local $target_branch branch to $target_branch." >&2
+                        exit 1
+                    fi
+                    if [ -n "$branch" ]; then
+                        echo "Push master and chakri separately so each deployment is checked." >&2
+                        exit 1
+                    fi
+                    branch=$target_branch
+                    commit=$local_sha
+                    ;;
+            esac
+            ;;
+    esac
+done
+
+if [ -z "$branch" ]; then
+    exit 0
+fi
+
+repository=$(git rev-parse --show-toplevel)
+script=$(cygpath -w "$repository/scripts/kubernetes_push_check.ps1")
+powershell.exe -NoProfile -ExecutionPolicy Bypass \
+    -File "$script" \
+    -Branch "$branch" \
+    -Commit "$commit"

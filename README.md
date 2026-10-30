@@ -208,6 +208,20 @@ python deploy_with_rollback.py "readmission-risk-api:$tag"
 
 The deployment script waits for rollout success and attempts `kubectl rollout undo` if the new version fails. It publishes the last rollback result to Pushgateway; start the complete workflow first so the Pushgateway port-forward is available on `127.0.0.1:9092`. Update the `image` value in `k8s/readmission-api.yml` to the same new tag so future `kubectl apply` commands keep using that build.
 
+### Gate Git pushes on local Kubernetes checks
+
+The `.githooks/pre-push` hook blocks pushes of `master` or `chakri` until the local checks pass: tests, Ruff, Docker image build, Docker Desktop Kubernetes rollout with rollback, and an in-pod API health check. Other branches and tags are not gated. Push the two branches separately. The check requires a clean working tree and the pushed commit to be the checked-out branch's `HEAD`.
+
+Enable the hook once in the repository:
+
+```powershell
+git config core.hooksPath .githooks
+```
+
+The hook requires Python with development dependencies, Docker Desktop Kubernetes using the `docker-desktop` kubectl context, and the existing `readmission-risk-api` deployment, MySQL Secret, and database. It runs locally on every machine where configured; it does not install itself remotely or protect pushes made from other machines or through GitHub's web interface. Do not push untrusted code while using this hook, since checks build and deploy the checked-out code.
+
+The `.github/workflows/local-ci-cd.yml` workflow separately runs tests, Ruff, and a Docker build on pushes to `master` and `chakri` using a Windows self-hosted runner registered with the upstream repository. It does not deploy; the local pre-push hook does that before a normal Git push. Registering the Actions runner is optional if only the local push gate is needed.
+
 ## Monitoring and Grafana
 
 Prometheus scrapes `readmission-risk-api.default.svc.cluster.local:8000/metrics` every 15 seconds. Grafana's default Prometheus datasource is provisioned by `k8s/monitoring.yaml`.
