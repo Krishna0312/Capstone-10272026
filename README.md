@@ -38,6 +38,20 @@ Install the full development and training environment. The form and prediction A
 python -m pip install -r requirements-dev.txt
 ```
 
+### First-time setup
+
+Run the setup script from the repository root and choose the environment to initialize:
+
+```powershell
+python first_time_setup.py --target compose
+python first_time_setup.py --target kubernetes
+python first_time_setup.py --target both
+```
+
+The script creates a local `.env` for Compose when needed, generates missing secrets without replacing configured values, starts MySQL and the API, and checks `/health`. For Kubernetes, it creates the database Secret only when absent, applies MySQL, builds and loads the API image specified in `k8s/readmission-api.yml`, deploys the API, and verifies health. It will not overwrite an existing Kubernetes Secret; if a Secret exists but lacks required keys, the script stops and identifies the missing key names.
+
+Kubernetes setup requires an active cluster selected in `kubectl`, Docker, and a cluster that can load a locally built image (Docker Desktop Kubernetes or kind). Ensure the cluster has a default StorageClass for the MySQL volume. The generated bootstrap credentials are saved in `.run/first_time_credentials.json`, which is ignored by Git; keep that file private. The bootstrap password initializes an admin only when one does not already exist. For Kubernetes, run `python start_services.py` after setup to open the API at <http://127.0.0.1:8001/login>.
+
 ### Run the API with MySQL request/audit storage
 
 The Compose stack runs MySQL with a persistent Docker volume and configures the API to store encrypted request and response bodies, audit events, and per-request status/latency records. Prometheus remains the time-series metrics backend for the existing dashboards. Payload and audit details are encrypted in the application with a Fernet key; keep that key secret and backed up, since losing it makes stored payloads unreadable. Database metadata such as timestamps, endpoint paths, and status codes is not encrypted.
