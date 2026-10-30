@@ -60,14 +60,9 @@ if ($LASTEXITCODE -ne 0) {
     throw "The readmission API deployment is not available in Kubernetes."
 }
 
-$controlPlane = & docker ps --all --format "{{.Names}}"
-if ($LASTEXITCODE -ne 0 -or $controlPlane -notcontains "desktop-control-plane") {
-    throw "The Docker Desktop Kubernetes control-plane container was not found."
-}
-
 $containerRunning = (& docker inspect --format "{{.State.Running}}" desktop-control-plane).Trim()
 if ($LASTEXITCODE -ne 0 -or $containerRunning -ne "true") {
-    throw "The Docker Desktop Kubernetes control-plane container is not running."
+    throw "The Docker Desktop Kubernetes control-plane container was not found or is not running."
 }
 
 $image = "readmission-risk-api:pre-push-$($Commit.Substring(0, 12))"
