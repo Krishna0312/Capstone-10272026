@@ -66,7 +66,14 @@ async def swagger_ui(request: Request) -> Response:
     swagger_config = """const ui = SwaggerUIBundle({
     requestInterceptor: async (request) => {
         const method = (request.method || "GET").toUpperCase();
-        if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+        const headers = request.headers || {};
+        const authorizationEntry = Object.entries(headers).find(
+            ([name]) => name.toLowerCase() === "authorization"
+        );
+        const authorization = authorizationEntry ? authorizationEntry[1] : undefined;
+        const usesBearerToken = typeof authorization === "string"
+            && authorization.toLowerCase().startsWith("bearer ");
+        if (["POST", "PUT", "PATCH", "DELETE"].includes(method) && !usesBearerToken) {
             const csrfResponse = await fetch(
                 new URL("auth/csrf", window.location.href),
                 { credentials: "same-origin" }

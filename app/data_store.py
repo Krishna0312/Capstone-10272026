@@ -72,6 +72,17 @@ auth_sessions = Table(
     Column("expires_at", DateTime, nullable=False, index=True),
 )
 
+auth_api_tokens = Table(
+    "auth_api_tokens",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("token_hash", String(64), nullable=False, unique=True),
+    Column("username", String(64), nullable=False, index=True),
+    Column("created_at", DateTime, nullable=False),
+    Column("expires_at", DateTime, nullable=False, index=True),
+    Column("revoked_at", DateTime, nullable=True),
+)
+
 
 class DataStore:
     def __init__(
@@ -143,10 +154,16 @@ class DataStore:
             session_result = connection.execute(
                 delete(auth_sessions).where(auth_sessions.c.expires_at < _naive_utc(now or datetime.now(timezone.utc)))
             )
+            api_token_result = connection.execute(
+                delete(auth_api_tokens).where(
+                    auth_api_tokens.c.expires_at < _naive_utc(now or datetime.now(timezone.utc))
+                )
+            )
         return (
             (request_result.rowcount or 0)
             + (audit_result.rowcount or 0)
             + (session_result.rowcount or 0)
+            + (api_token_result.rowcount or 0)
         )
 
     def create_user(self, username: str, password: str, role: str = "user") -> None:
@@ -237,6 +254,81 @@ class DataStore:
                 delete(auth_sessions).where(auth_sessions.c.token_hash == _token_hash(token))
             )
 
+    def create_api_token(self, username: str, token_days: int = 90) -> tuple[str, dict[str, Any]]:
+        if token_days < 1:
+            raise ValueError("API token lifetime must be at least one day.")
+        token = f"rr_{secrets.token_urlsafe(32)}"
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        expires_at = now + timedelta(days=token_days)
+        with self._engine.begin() as connection:
+            user = connection.execute(
+                select(auth_users.c.username, auth_users.c.is_active).where(
+                    auth_users.c.username == username
+                )
+            ).mappings().first()
+            if user is None:
+                raise ValueError("User not found.")
+            if not user["is_active"]:
+                raise ValueError("Cannot create an API token for a disabled user.")
+            result = connection.execute(
+                insert(auth_api_tokens).values(
+                    token_hash=_token_hash(token),
+                    username=username,
+                    created_at=now,
+                    expires_at=expires_at,
+                    revoked_at=None,
+                )
+            )
+            token_id = result.inserted_primary_key[0]
+        return token, {
+            "id": token_id,
+            "username": username,
+            "created_at": now,
+            "expires_at": expires_at,
+            "revoked_at": None,
+        }
+
+    def authenticate_api_token(self, token: str) -> dict[str, Any] | None:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        with self._engine.connect() as connection:
+            user = connection.execute(
+                select(auth_users)
+                .join(auth_api_tokens, auth_api_tokens.c.username == auth_users.c.username)
+                .where(
+                    auth_api_tokens.c.token_hash == _token_hash(token),
+                    auth_api_tokens.c.expires_at > now,
+                    auth_api_tokens.c.revoked_at.is_(None),
+                    auth_users.c.is_active.is_(True),
+                )
+            ).mappings().first()
+        return _public_user(user) if user is not None else None
+
+    def list_api_tokens(self) -> list[dict[str, Any]]:
+        with self._engine.connect() as connection:
+            tokens = connection.execute(
+                select(
+                    auth_api_tokens.c.id,
+                    auth_api_tokens.c.username,
+                    auth_api_tokens.c.created_at,
+                    auth_api_tokens.c.expires_at,
+                    auth_api_tokens.c.revoked_at,
+                ).order_by(auth_api_tokens.c.username, auth_api_tokens.c.created_at.desc())
+            ).mappings()
+            return [dict(token) for token in tokens]
+
+    def revoke_api_token(self, token_id: int) -> bool:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        with self._engine.begin() as connection:
+            result = connection.execute(
+                update(auth_api_tokens)
+                .where(
+                    auth_api_tokens.c.id == token_id,
+                    auth_api_tokens.c.revoked_at.is_(None),
+                )
+                .values(revoked_at=now)
+            )
+        return bool(result.rowcount)
+
     def list_users(self) -> list[dict[str, Any]]:
         with self._engine.connect() as connection:
             users = connection.execute(
@@ -278,6 +370,14 @@ class DataStore:
                 connection.execute(
                     delete(auth_sessions).where(auth_sessions.c.username == username)
                 )
+                connection.execute(
+                    update(auth_api_tokens)
+                    .where(
+                        auth_api_tokens.c.username == username,
+                        auth_api_tokens.c.revoked_at.is_(None),
+                    )
+                    .values(revoked_at=datetime.now(timezone.utc).replace(tzinfo=None))
+                )
         return True
 
     def reset_user_password(self, username: str, password: str) -> bool:
@@ -291,6 +391,14 @@ class DataStore:
             if result.rowcount:
                 connection.execute(
                     delete(auth_sessions).where(auth_sessions.c.username == username)
+                )
+                connection.execute(
+                    update(auth_api_tokens)
+                    .where(
+                        auth_api_tokens.c.username == username,
+                        auth_api_tokens.c.revoked_at.is_(None),
+                    )
+                    .values(revoked_at=datetime.now(timezone.utc).replace(tzinfo=None))
                 )
         return bool(result.rowcount)
 
@@ -339,7 +447,7 @@ def _verify_password(password: str, password_hash: str) -> bool:
 
 
 def _token_hash(token: str) -> str:
-    return hashlib.sha256(token.encode("ascii")).hexdigest()
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def _public_user(user: Any) -> dict[str, Any]:

@@ -74,6 +74,17 @@ The sign-in page is at <http://127.0.0.1:8000/login>; use the bootstrap admin ac
 
 Swagger UI supports authenticated predictions too: sign in at `/login` in the same browser and host, then open `/docs`. Unauthenticated requests to `/docs` and `/openapi.json` redirect to sign-in. The schema shows only the prediction and health endpoints; browser login, logout, account management, and form routes are omitted. The UI sends the session cookie and automatically obtains and attaches the CSRF header for mutating requests.
 
+For a simpler API client, an administrator can create a 90-day API token from **Account management**. The token is displayed once; store it securely and revoke it from the same page when no longer needed. Send it as a bearer token, which does not require the browser-session CSRF header:
+
+```powershell
+curl.exe -X POST "https://your-api.example.com/predict" `
+  -H "Authorization: Bearer <API_TOKEN>" `
+  -H "Content-Type: application/json" `
+  --data-binary "@prediction.json"
+```
+
+The JSON file must contain a `features` object with `race`, `gender`, `age`, `admission_type_id`, `discharge_disposition_id`, `admission_source_id`, and `time_in_hospital`; see `/docs` for the full request schema. API tokens are stored as hashes, expire after 90 days, and are revoked when their account is disabled or its password is reset. Use HTTPS for external access.
+
 The API is available at <http://127.0.0.1:8000>. Stop the containers with `docker compose down`; the named `mysql_data` volume is retained. `docker compose down -v` deletes the database volume, user accounts, sessions, and records. Records older than 30 days and expired sessions are purged at startup and daily. Do not commit `.env` or expose MySQL outside the Docker network. For full disk-level protection, also use encrypted host storage for Docker volumes.
 
 If port 8000 is already occupied, set `API_PORT` in `.env` (for example, `API_PORT=18080`) and use that port for the API URL.

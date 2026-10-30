@@ -545,6 +545,7 @@ def test_swagger_ui_attaches_session_csrf_token_for_mutating_requests():
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert '"withCredentials": true' in response.text
+    assert "usesBearerToken" in response.text
     assert 'new URL("auth/csrf", window.location.href)' in response.text
     assert 'request.headers["X-CSRF-Token"] = csrf.csrf_token' in response.text
 
@@ -562,7 +563,83 @@ def test_openapi_schema_hides_login_and_browser_management_routes():
     response = client.get("/openapi.json")
 
     assert response.status_code == 200
-    assert set(response.json()["paths"]) == {"/health", "/predict"}
+    schema = response.json()
+    assert set(schema["paths"]) == {"/health", "/predict"}
+    assert "HTTPBearer" in schema["components"]["securitySchemes"]
+    assert {"HTTPBearer": []} in schema["paths"]["/predict"]["post"]["security"]
+
+
+def test_prediction_api_accepts_a_bearer_token_without_csrf(monkeypatch, authenticated_client):
+    from app import routes
+
+    store = authenticated_client
+    token, _ = store.create_api_token("test-admin")
+    monkeypatch.setattr(routes, "predict_features", lambda _features: (1, 0.75))
+    client.cookies.clear()
+    client.headers.pop("X-CSRF-Token", None)
+
+    response = client.post(
+        "/predict",
+        json={"features": _feature_values()},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["prediction"] == 1
+
+
+def test_prediction_api_rejects_revoked_bearer_token(authenticated_client):
+    store = authenticated_client
+    token, metadata = store.create_api_token("test-admin")
+    assert store.revoke_api_token(metadata["id"])
+
+    response = client.post(
+        "/predict",
+        json={"features": _feature_values()},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+def test_admin_can_create_one_time_and_revoke_api_tokens(authenticated_client):
+    store = authenticated_client
+    csrf_token = client.headers["X-CSRF-Token"]
+    create_response = client.post(
+        "/admin/users",
+        data={
+            "csrf_token": csrf_token,
+            "action": "create_api_token",
+            "username": "test-admin",
+        },
+        follow_redirects=False,
+    )
+
+    assert create_response.status_code == 200
+    token_match = re.search(r"<code>(rr_[^<]+)</code>", create_response.text)
+    assert token_match is not None
+    token = token_match.group(1)
+    assert store.authenticate_api_token(token) is not None
+    assert token not in client.get("/admin/users").text
+
+    metadata = next(
+        token_row
+        for token_row in store.list_api_tokens()
+        if token_row["username"] == "test-admin"
+    )
+    revoke_response = client.post(
+        "/admin/users",
+        data={
+            "csrf_token": csrf_token,
+            "action": "revoke_api_token",
+            "token_id": str(metadata["id"]),
+        },
+        follow_redirects=False,
+    )
+
+    assert revoke_response.status_code == 303
+    assert store.authenticate_api_token(token) is None
 
 
 def test_admin_can_create_and_disable_accounts(authenticated_client):

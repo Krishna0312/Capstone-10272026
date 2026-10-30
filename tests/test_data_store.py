@@ -5,7 +5,14 @@ import pytest
 from cryptography.fernet import Fernet
 from sqlalchemy import create_engine, select, update
 
-from app.data_store import DataStore, audit_events, auth_sessions, auth_users, request_records
+from app.data_store import (
+    DataStore,
+    audit_events,
+    auth_api_tokens,
+    auth_sessions,
+    auth_users,
+    request_records,
+)
 
 
 def _store(retention_days=30):
@@ -167,3 +174,43 @@ def test_expired_sessions_are_rejected_and_purged():
 
     assert store.get_session(session_token) is None
     assert store.purge_expired() == 0
+
+
+def test_api_tokens_are_hashed_expire_and_can_be_revoked():
+    store, engine = _store()
+    store.create_user("token-user", "token-user-password")
+
+    token, metadata = store.create_api_token("token-user")
+
+    assert token.startswith("rr_")
+    assert metadata["expires_at"] - metadata["created_at"] == timedelta(days=90)
+    assert store.authenticate_api_token(token)["username"] == "token-user"
+    with engine.connect() as connection:
+        stored_token = connection.execute(select(auth_api_tokens)).mappings().one()
+    assert token not in stored_token["token_hash"]
+    assert store.revoke_api_token(metadata["id"])
+    assert store.authenticate_api_token(token) is None
+    assert not store.revoke_api_token(metadata["id"])
+
+
+def test_api_tokens_expire_and_are_revoked_when_user_is_disabled_or_password_reset():
+    store, engine = _store()
+    store.create_user("token-user", "token-user-password")
+    expired_token, expired_metadata = store.create_api_token("token-user")
+    with engine.begin() as connection:
+        connection.execute(
+            update(auth_api_tokens)
+            .where(auth_api_tokens.c.id == expired_metadata["id"])
+            .values(expires_at=datetime.now(timezone.utc) - timedelta(minutes=1))
+        )
+    assert store.authenticate_api_token(expired_token) is None
+    assert store.purge_expired() == 1
+
+    disable_token, _ = store.create_api_token("token-user")
+    assert store.set_user_active("token-user", False)
+    assert store.authenticate_api_token(disable_token) is None
+
+    assert store.set_user_active("token-user", True)
+    reset_token, _ = store.create_api_token("token-user")
+    assert store.reset_user_password("token-user", "replacement-password")
+    assert store.authenticate_api_token(reset_token) is None

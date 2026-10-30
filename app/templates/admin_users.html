@@ -41,10 +41,14 @@
             font: inherit;
         }
         button { color: white; background: #236eb5; border: 0; cursor: pointer; }
+        button:disabled { opacity: 0.55; cursor: not-allowed; }
         table { width: 100%; margin-top: 20px; border-collapse: collapse; }
         th, td { padding: 12px; text-align: left; border-bottom: 1px solid #e6edf5; }
         nav { display: flex; justify-content: space-between; gap: 16px; }
         a { color: #236eb5; }
+        .inline-form { display: inline; }
+        .token-notice { margin: 20px 0; padding: 16px; background: #fff8df; border: 1px solid #ecd98e; border-radius: 10px; }
+        .token-notice code { display: block; overflow-wrap: anywhere; padding: 10px; background: white; }
         @media (max-width: 560px) {
             main { padding: 18px; overflow-x: auto; }
             table { min-width: 520px; }
@@ -61,6 +65,7 @@
         </form>
     </nav>
     <h1>Account management</h1>
+    __API_TOKEN_NOTICE__
     <h2>Create account</h2>
     <form class="create-user" method="post" action="/admin/users">
         <input type="hidden" name="csrf_token" value="__CSRF_TOKEN__">
@@ -78,7 +83,7 @@
     </form>
     <h2>Existing accounts</h2>
     <table>
-        <thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Access</th><th>Password</th></tr></thead>
+        <thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Access</th><th>Password</th><th>API tokens</th></tr></thead>
         <tbody>__USER_ROWS__</tbody>
     </table>
 </main>

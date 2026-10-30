@@ -1,7 +1,9 @@
 from importlib.resources import files
 import asyncio
+from datetime import datetime, timezone
 from html import escape
 import secrets
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -18,9 +20,11 @@ from app.auth import (
     get_auth_store,
     optional_session,
     require_admin,
+    require_prediction_auth,
     require_session,
     validate_csrf,
 )
+from app.data_store import DataStore
 from app.observability import log_event
 from app.prediction import MODEL_PATH, predict_features
 from app.schemas import Features, PredictionRequest, PredictionResponse
@@ -184,14 +188,45 @@ async def admin_users_page(
     store = get_auth_store()
     if store is None:
         raise HTTPException(status_code=503, detail="Authentication storage is unavailable.")
+    return await _render_admin_users(store, session)
+
+
+async def _render_admin_users(
+    store: DataStore,
+    session: AuthSession,
+    token_notice: str = "",
+):
+    users = await asyncio.to_thread(store.list_users)
+    tokens = await asyncio.to_thread(store.list_api_tokens)
+    tokens_by_user: dict[str, list[dict[str, Any]]] = {}
+    for token in tokens:
+        tokens_by_user.setdefault(token["username"], []).append(token)
     rows = []
-    for user in await asyncio.to_thread(store.list_users):
+    for user in users:
         username = escape(user["username"])
         role = escape(user["role"])
         active = bool(user["is_active"])
         state = "Active" if active else "Disabled"
         next_active = "false" if active else "true"
         action = "Disable" if active else "Enable"
+        token_rows = []
+        for token in tokens_by_user.get(user["username"], []):
+            token_id = token["id"]
+            token_expiry = escape(token["expires_at"].isoformat(sep=" ", timespec="minutes"))
+            token_revoked = token["revoked_at"] is not None
+            token_expired = token["expires_at"] <= datetime.now(timezone.utc).replace(tzinfo=None)
+            if token_revoked or token_expired or not active:
+                token_status = "Revoked" if token_revoked or not active else "Expired"
+                token_rows.append(f"<div>Token {token_id}: {token_status} (expires {token_expiry})</div>")
+                continue
+            token_rows.append(
+                f"<div>Token {token_id}: Active until {token_expiry} "
+                "<form method=\"post\" action=\"/admin/users\" class=\"inline-form\">"
+                f"<input type=\"hidden\" name=\"csrf_token\" value=\"{escape(session.csrf_token)}\">"
+                "<input type=\"hidden\" name=\"action\" value=\"revoke_api_token\">"
+                f"<input type=\"hidden\" name=\"token_id\" value=\"{token_id}\">"
+                "<button type=\"submit\">Revoke token</button></form></div>"
+            )
         rows.append(
             "<tr>"
             f"<td>{username}</td><td>{role}</td><td>{state}</td>"
@@ -207,11 +242,32 @@ async def admin_users_page(
             f"<input type=\"hidden\" name=\"username\" value=\"{username}\">"
             "<input type=\"password\" name=\"password\" minlength=\"12\" maxlength=\"128\" "
             "autocomplete=\"new-password\" placeholder=\"Temporary password\" required>"
-            "<button type=\"submit\">Reset password</button></form></td></tr>"
+            "<button type=\"submit\">Reset password</button></form></td>"
+            "<td>"
+            f"{''.join(token_rows)}"
+            "<form method=\"post\" action=\"/admin/users\">"
+            f"<input type=\"hidden\" name=\"csrf_token\" value=\"{escape(session.csrf_token)}\">"
+            "<input type=\"hidden\" name=\"action\" value=\"create_api_token\">"
+            f"<input type=\"hidden\" name=\"username\" value=\"{username}\">"
+            "<button type=\"submit\""
+            + ("" if active else " disabled")
+            + ">Create 90-day API token</button></form></td></tr>"
         )
     html = ADMIN_HTML.replace("__CSRF_TOKEN__", escape(session.csrf_token))
     html = html.replace("__USER_ROWS__", "".join(rows))
+    html = html.replace("__API_TOKEN_NOTICE__", token_notice)
     return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+
+
+def _api_token_notice(username: str, token: str, expires_at: datetime) -> str:
+    return (
+        '<section class="token-notice" role="status">'
+        f"<p>API token for <strong>{escape(username)}</strong>. Copy it now; "
+        "it will not be shown again.</p>"
+        f"<code>{escape(token)}</code>"
+        f"<p>Expires {escape(expires_at.isoformat(sep=' ', timespec='minutes'))} UTC.</p>"
+        "</section>"
+    )
 
 
 @router.post("/admin/users", include_in_schema=False)
@@ -237,6 +293,25 @@ async def manage_users(
             if role not in {"admin", "user"}:
                 raise ValueError("Choose a valid user role.")
             await asyncio.to_thread(store.create_user, username, password, role)
+        elif action == "create_api_token":
+            username = form.get("username")
+            if not isinstance(username, str):
+                raise ValueError("Username is required.")
+            api_token, token_metadata = await asyncio.to_thread(
+                store.create_api_token,
+                username,
+            )
+            return await _render_admin_users(
+                store,
+                session,
+                _api_token_notice(username, api_token, token_metadata["expires_at"]),
+            )
+        elif action == "revoke_api_token":
+            token_id = form.get("token_id")
+            if not isinstance(token_id, str) or not token_id.isdecimal():
+                raise ValueError("Invalid API token.")
+            if not await asyncio.to_thread(store.revoke_api_token, int(token_id)):
+                raise ValueError("API token not found or already revoked.")
         elif action == "set_active":
             username = form.get("username")
             active_value = form.get("is_active")
@@ -292,9 +367,10 @@ def health_check() -> dict[str, str]:
 def predict_risk(
     payload: PredictionRequest,
     request: Request,
-    session: AuthSession = Depends(require_session),
+    session: AuthSession = Depends(require_prediction_auth),
 ):
-    validate_csrf(session, request.headers.get("X-CSRF-Token"))
+    if not session.uses_api_token:
+        validate_csrf(session, request.headers.get("X-CSRF-Token"))
     patient_id = payload.features.patient_nbr
     encounter_id = payload.features.encounter_id
     log_event(
