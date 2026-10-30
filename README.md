@@ -210,7 +210,7 @@ The deployment script waits for rollout success and attempts `kubectl rollout un
 
 ### Gate Git pushes on local Kubernetes checks
 
-The `.githooks/pre-push` hook blocks pushes of `master` or `chakri` until the local checks pass: tests, Ruff, Docker image build, Docker Desktop Kubernetes rollout with rollback, and an in-pod API health check. Other branches and tags are not gated. Push the two branches separately. The check requires a clean working tree and the pushed commit to be the checked-out branch's `HEAD`.
+The `.githooks/pre-push` hook blocks pushes of `master` until the local checks pass: tests, Ruff, Docker image build, Docker Desktop Kubernetes rollout with rollback, and an in-pod API health check. Pushes of `chakri`, other branches, and tags are not gated. The check requires a clean working tree and the pushed commit to be the checked-out `master` branch's `HEAD`.
 
 Enable the hook once in the repository:
 
@@ -218,9 +218,9 @@ Enable the hook once in the repository:
 git config core.hooksPath .githooks
 ```
 
-The hook requires Python with development dependencies, Docker Desktop Kubernetes using the `docker-desktop` kubectl context, and the existing `readmission-risk-api` deployment, MySQL Secret, and database. It runs locally on every machine where configured; it does not install itself remotely or protect pushes made from other machines or through GitHub's web interface. Do not push untrusted code while using this hook, since checks build and deploy the checked-out code.
+The hook is cross-platform and requires Python 3 with development dependencies, Docker, a reachable Kubernetes cluster configured with `kubectl`, and the existing `readmission-risk-api` deployment, MySQL Secret, and database. For image import, it uses Docker Desktop's running `desktop-control-plane` container when available, or the `kind` CLI for a kind cluster. Use Bash/Git Bash for the hook on Linux, macOS, and Windows. It runs locally on every machine where configured; it does not install itself remotely or protect pushes made from other machines or through GitHub's web interface. Do not push untrusted code while using this hook, since checks build and deploy the checked-out code.
 
-The `.github/workflows/local-ci-cd.yml` workflow separately runs tests, Ruff, and a Docker build on pushes to `master` and `chakri` using a Windows self-hosted runner registered with the upstream repository. It does not deploy; the local pre-push hook does that before a normal Git push. Registering the Actions runner is optional if only the local push gate is needed.
+The `.github/workflows/local-ci-cd.yml` workflow separately runs tests, Ruff, and a Docker build on pushes to `master` and `chakri` using a Windows self-hosted runner registered with the upstream repository. It does not deploy; the local pre-push hook gates deployment only for `master`. Registering the Actions runner is optional if only the local push gate is needed.
 
 ## Monitoring and Grafana
 
