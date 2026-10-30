@@ -1,16 +1,54 @@
 import ast
 from html.parser import HTMLParser
 from pathlib import Path
+import re
 from typing import get_args
 
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
+from cryptography.fernet import Fernet
+from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
 
+from app import auth
+from app.data_store import DataStore
 from app.main import Features, PredictionRequest, app
+from app.auth import SESSION_COOKIE
 
 
 client = TestClient(app)
 
+
+def _authenticate_test_client(test_client, token, csrf_token):
+    test_client.cookies.set(SESSION_COOKIE, token)
+    test_client.headers["X-CSRF-Token"] = csrf_token
+
+
+@pytest.fixture(autouse=True)
+def authenticated_client(monkeypatch):
+    monkeypatch.setenv("AUTH_COOKIE_SECURE", "false")
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    store = DataStore(
+        "sqlite://",
+        Fernet.generate_key().decode("ascii"),
+        engine=engine,
+    )
+    store.initialize()
+    store.create_user("test-admin", "test-password-long-enough", role="admin")
+    token, csrf_token = store.create_session("test-admin", 8)
+    monkeypatch.setattr(auth, "get_auth_store", lambda: store)
+    monkeypatch.setattr("app.routes.get_auth_store", lambda: store)
+    client.cookies.clear()
+    client.headers.pop("X-CSRF-Token", None)
+    _authenticate_test_client(client, token, csrf_token)
+    yield store
+    client.cookies.clear()
+    client.headers.pop("X-CSRF-Token", None)
 
 def _feature_values():
     values = {}
@@ -175,7 +213,7 @@ def test_form_has_a_control_for_every_prediction_feature():
         field.alias or field_name
         for field_name, field in Features.model_fields.items()
     }
-    assert parser.names == expected_names
+    assert parser.names == expected_names | {"csrf_token"}
     assert parser.numeric_minimums
     assert all(minimum == "0" for minimum in parser.numeric_minimums.values())
     assert parser.required_names == {
@@ -187,6 +225,7 @@ def test_form_has_a_control_for_every_prediction_feature():
         "admission_source_id",
         "time_in_hospital",
     }
+    assert "/admin/users" in response.text
 
 
 def test_prediction_api_requires_patient_and_admission_fields():
@@ -278,6 +317,11 @@ def test_mysql_storage_records_encrypted_request_response_and_audit(monkeypatch,
     try:
         monkeypatch.setattr("app.prediction._load_model", lambda: CapturingModel())
         with TestClient(app) as stored_client:
+            session_token, csrf_token = auth.get_auth_store().create_session(
+                "test-admin",
+                8,
+            )
+            _authenticate_test_client(stored_client, session_token, csrf_token)
             health_response = stored_client.get("/health")
             prediction_response = stored_client.post(
                 "/predict",
@@ -396,6 +440,185 @@ def test_prediction_form_accepts_model_fields():
     assert body["prediction"] in {0, 1}
     assert 0.0 <= body["probability"] <= 1.0
     assert body["model_name"] == "readmission_risk_model"
+
+
+def test_unauthenticated_user_is_redirected_to_sign_in():
+    client.cookies.clear()
+    response = client.get("/", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+def test_prediction_api_requires_session_and_csrf():
+    response = client.post(
+        "/predict",
+        json={"features": _feature_values()},
+        headers={"X-CSRF-Token": "invalid"},
+    )
+    assert response.status_code == 403
+
+    client.cookies.clear()
+    response = client.post(
+        "/predict",
+        json={"features": _feature_values()},
+        headers={"X-CSRF-Token": "token"},
+    )
+    assert response.status_code == 401
+
+
+def test_login_uses_csrf_and_creates_eight_hour_session():
+    client.cookies.clear()
+    login_page = client.get("/login")
+    csrf_match = re.search(r'name="csrf_token" value="([^"]+)"', login_page.text)
+    assert csrf_match is not None
+    csrf_token = csrf_match.group(1)
+
+    response = client.post(
+        "/login",
+        data={
+            "csrf_token": csrf_token,
+            "username": "test-admin",
+            "password": "test-password-long-enough",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/"
+    assert SESSION_COOKIE in response.cookies
+    assert client.get("/").status_code == 200
+
+
+def test_login_rejects_invalid_password():
+    client.cookies.clear()
+    login_page = client.get("/login")
+    csrf_token = re.search(r'name="csrf_token" value="([^"]+)"', login_page.text).group(1)
+
+    response = client.post(
+        "/login",
+        data={
+            "csrf_token": csrf_token,
+            "username": "test-admin",
+            "password": "incorrect-password",
+        },
+    )
+
+    assert response.status_code == 401
+    assert "Invalid username or password" in response.text
+
+
+def test_login_rejects_invalid_csrf_token():
+    client.cookies.clear()
+    client.get("/login")
+    response = client.post(
+        "/login",
+        data={
+            "csrf_token": "not-the-cookie-token",
+            "username": "test-admin",
+            "password": "test-password-long-enough",
+        },
+    )
+    assert response.status_code == 403
+
+
+def test_logout_revokes_the_current_session(authenticated_client):
+    session_token = client.cookies.get(SESSION_COOKIE)
+    response = client.post(
+        "/logout",
+        data={"csrf_token": client.headers["X-CSRF-Token"]},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert authenticated_client.get_session(session_token) is None
+
+
+def test_json_api_can_retrieve_session_csrf_token(authenticated_client):
+    response = client.get("/auth/csrf")
+    assert response.status_code == 200
+    assert response.json()["csrf_token"] == client.headers["X-CSRF-Token"]
+
+
+def test_admin_can_create_and_disable_accounts(authenticated_client):
+    store = authenticated_client
+    admin_page = client.get("/admin/users")
+    assert admin_page.status_code == 200
+    csrf_match = re.search(r'name="csrf_token" value="([^"]+)"', admin_page.text)
+    assert csrf_match is not None
+    csrf_token = csrf_match.group(1)
+
+    create_response = client.post(
+        "/admin/users",
+        data={
+            "csrf_token": csrf_token,
+            "action": "create",
+            "username": "new-user",
+            "password": "another-password-123",
+            "role": "user",
+        },
+        follow_redirects=False,
+    )
+    assert create_response.status_code == 303
+    assert store.authenticate_user("new-user", "another-password-123") is not None
+
+    disable_response = client.post(
+        "/admin/users",
+        data={
+            "csrf_token": csrf_token,
+            "action": "set_active",
+            "username": "new-user",
+            "is_active": "false",
+        },
+        follow_redirects=False,
+    )
+    assert disable_response.status_code == 303
+    assert store.authenticate_user("new-user", "another-password-123") is None
+
+
+def test_admin_can_reset_password_and_revoke_user_session(authenticated_client):
+    store = authenticated_client
+    store.create_user("reset-user", "original-password-123")
+    session_token, _ = store.create_session("reset-user", 8)
+    response = client.post(
+        "/admin/users",
+        data={
+            "csrf_token": client.headers["X-CSRF-Token"],
+            "action": "reset_password",
+            "username": "reset-user",
+            "password": "replacement-password-123",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert store.authenticate_user("reset-user", "original-password-123") is None
+    assert store.authenticate_user("reset-user", "replacement-password-123") is not None
+    assert store.get_session(session_token) is None
+
+
+def test_non_admin_cannot_manage_accounts(authenticated_client):
+    store = authenticated_client
+    store.create_user("regular-user", "regular-password-123")
+    token, csrf_token = store.create_session("regular-user", 8)
+    client.cookies.clear()
+    _authenticate_test_client(client, token, csrf_token)
+
+    assert "/admin/users" not in client.get("/").text
+    assert client.get("/admin/users").status_code == 403
+
+
+def test_last_active_admin_cannot_be_disabled(authenticated_client):
+    response = client.post(
+        "/admin/users",
+        data={
+            "csrf_token": client.headers["X-CSRF-Token"],
+            "action": "set_active",
+            "username": "test-admin",
+            "is_active": "false",
+        },
+    )
+    assert response.status_code == 422
+    assert "last active administrator" in response.json()["detail"]
 
 
 def test_prediction_form_rejects_missing_required_admission_details():

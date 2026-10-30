@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: readmission-risk-api
-          image: readmission-risk-api:random-forest-main-20261029-2103
+          image: readmission-risk-api:auth-20261029-2139
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000
@@ -29,6 +29,18 @@ spec:
                 secretKeyRef:
                   name: readmission-db-credentials
                   key: APP_DATA_ENCRYPTION_KEY
+            - name: AUTH_BOOTSTRAP_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: readmission-db-credentials
+                  key: AUTH_BOOTSTRAP_ADMIN_USERNAME
+            - name: AUTH_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: readmission-db-credentials
+                  key: AUTH_BOOTSTRAP_ADMIN_PASSWORD
+            - name: AUTH_COOKIE_SECURE
+              value: "true"
             - name: DATA_RETENTION_DAYS
               value: "30"
           startupProbe:

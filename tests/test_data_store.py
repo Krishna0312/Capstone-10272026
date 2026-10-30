@@ -3,9 +3,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from cryptography.fernet import Fernet
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, update
 
-from app.data_store import DataStore, audit_events, request_records
+from app.data_store import DataStore, audit_events, auth_sessions, auth_users, request_records
 
 
 def _store(retention_days=30):
@@ -88,3 +88,82 @@ def test_store_requires_valid_retention_and_encryption_key():
 
     with pytest.raises(ValueError, match="at least 1"):
         DataStore("sqlite:///:memory:", Fernet.generate_key().decode(), retention_days=0)
+
+
+def test_user_password_is_hashed_and_session_token_is_not_stored():
+    store, engine = _store()
+    store.create_user("Care.Team", "this-is-a-long-password", role="admin")
+
+    user = store.authenticate_user("CARE.TEAM", "this-is-a-long-password")
+    assert user is not None
+    assert user["username"] == "care.team"
+    assert user["role"] == "admin"
+    assert store.authenticate_user("care.team", "wrong-password") is None
+
+    session_token, csrf_token = store.create_session("care.team", 8)
+    session = store.get_session(session_token)
+    assert session is not None
+    assert session["csrf_token"] == csrf_token
+    with engine.connect() as connection:
+        stored_user = connection.execute(select(auth_users)).mappings().one()
+        stored_session = connection.execute(select(auth_sessions)).mappings().one()
+    assert stored_user["password_hash"] != "this-is-a-long-password"
+    assert session_token not in stored_session["token_hash"]
+
+
+def test_disabling_user_revokes_sessions_and_prevents_login():
+    store, _ = _store()
+    store.create_user("clinical-user", "another-long-password")
+    session_token, _ = store.create_session("clinical-user", 8)
+
+    store.set_user_active("clinical-user", False)
+
+    assert store.authenticate_user("clinical-user", "another-long-password") is None
+    assert store.get_session(session_token) is None
+
+
+def test_password_reset_revokes_existing_sessions():
+    store, _ = _store()
+    store.create_user("password-user", "original-password")
+    session_token, _ = store.create_session("password-user", 8)
+
+    assert store.reset_user_password("password-user", "replacement-password")
+
+    assert store.authenticate_user("password-user", "original-password") is None
+    assert store.authenticate_user("password-user", "replacement-password") is not None
+    assert store.get_session(session_token) is None
+
+
+def test_user_creation_validates_name_role_and_password():
+    store, _ = _store()
+    with pytest.raises(ValueError, match="Username"):
+        store.create_user("x", "another-long-password")
+    with pytest.raises(ValueError, match="12 and 128"):
+        store.create_user("valid-name", "short")
+    with pytest.raises(ValueError, match="role"):
+        store.create_user("valid-name", "another-long-password", role="owner")
+
+
+def test_bootstrap_admin_is_created_once_without_overwriting_password():
+    store, _ = _store()
+    store.ensure_bootstrap_admin("initial-admin", "first-admin-password")
+    store.ensure_bootstrap_admin("initial-admin", "replacement-admin-password")
+
+    assert store.authenticate_user("initial-admin", "first-admin-password") is not None
+    assert store.authenticate_user("initial-admin", "replacement-admin-password") is None
+    assert store.active_admin_count() == 1
+
+
+def test_expired_sessions_are_rejected_and_purged():
+    store, engine = _store()
+    store.create_user("expired-user", "another-long-password")
+    session_token, _ = store.create_session("expired-user", 8)
+    with engine.begin() as connection:
+        connection.execute(
+            update(auth_sessions).values(
+                expires_at=datetime.now(timezone.utc) - timedelta(minutes=1)
+            )
+        )
+
+    assert store.get_session(session_token) is None
+    assert store.purge_expired() == 0

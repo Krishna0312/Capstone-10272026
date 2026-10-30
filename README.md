@@ -32,25 +32,17 @@ The scripts write logs and process state under `.run/`. They leave processes tha
 
 The current main model is the Random Forest in `artifacts/final_readmission_model.joblib`; its evaluation is `artifacts/model_evaluation_report.json`. The previous Gradient Boosting model is preserved as `artifacts/backup_gradient_boosting_model.joblib`, with metrics in `artifacts/backup_gradient_boosting_evaluation.json`. This backup is kept for manual promotion; API inference does not automatically fail over between models.
 
-Install the full development and training environment, then run the API:
+Install the full development and training environment. The form and prediction API fail closed unless a database-backed account store is configured; use the Compose setup below for a ready-to-run local API. A bare `uvicorn` or `docker run` without `DATABASE_URL` and `APP_DATA_ENCRYPTION_KEY` will not accept logins or predictions.
 
 ```powershell
 python -m pip install -r requirements-dev.txt
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-```
-
-Or run in Docker:
-
-```powershell
-docker build -t readmission-risk-api:metrics .
-docker run --rm -p 8000:8000 readmission-risk-api:metrics
 ```
 
 ### Run the API with MySQL request/audit storage
 
 The Compose stack runs MySQL with a persistent Docker volume and configures the API to store encrypted request and response bodies, audit events, and per-request status/latency records. Prometheus remains the time-series metrics backend for the existing dashboards. Payload and audit details are encrypted in the application with a Fernet key; keep that key secret and backed up, since losing it makes stored payloads unreadable. Database metadata such as timestamps, endpoint paths, and status codes is not encrypted.
 
-Create a local `.env` file and replace the example values with strong secrets. Generate an encryption key after installing the development requirements:
+Create a local `.env` file and replace the example values with unique, strong secrets. Choose a bootstrap administrator username and password of at least 12 characters; the initial admin account is created the first time the API connects to MySQL and is not reset on later restarts. If you already have a `.env`, add the auth variables from `.env.example` without replacing your existing secrets. Generate an encryption key after installing the development requirements:
 
 ```powershell
 Copy-Item .env.example .env
@@ -64,7 +56,9 @@ docker compose up --build -d
 docker compose ps
 ```
 
-The API is available at <http://127.0.0.1:8000>. Stop the containers with `docker compose down`; the named `mysql_data` volume is retained. `docker compose down -v` deletes the database volume and all records. Records older than 30 days are purged at startup and daily. Do not commit `.env` or expose MySQL outside the Docker network. For full disk-level protection, also use encrypted host storage for Docker volumes.
+The sign-in page is at <http://127.0.0.1:8000/login>; use the bootstrap admin account to sign in and open **Account management** to create, disable, or reset user accounts. Passwords are stored as scrypt hashes. Browser sessions expire after 8 hours, use HttpOnly/SameSite cookies, and prediction requests require CSRF protection. `AUTH_COOKIE_SECURE=true` requires HTTPS except on localhost; use HTTPS before exposing the service to other machines. The JSON prediction endpoint accepts the same authenticated session cookie; obtain its CSRF header value from `GET /auth/csrf`.
+
+The API is available at <http://127.0.0.1:8000>. Stop the containers with `docker compose down`; the named `mysql_data` volume is retained. `docker compose down -v` deletes the database volume, user accounts, sessions, and records. Records older than 30 days and expired sessions are purged at startup and daily. Do not commit `.env` or expose MySQL outside the Docker network. For full disk-level protection, also use encrypted host storage for Docker volumes.
 
 If port 8000 is already occupied, set `API_PORT` in `.env` (for example, `API_PORT=18080`) and use that port for the API URL.
 
@@ -168,11 +162,12 @@ The `desktop-control-plane` image-import commands are specific to this Docker De
 
 ### Configure MySQL storage in Kubernetes
 
-Generate credentials and the application encryption key, then create/update the Kubernetes Secret before applying the MySQL and API manifests:
+Generate credentials, the application encryption key, and a bootstrap admin password, then create/update the Kubernetes Secret before applying the MySQL and API manifests:
 
 ```powershell
 $dbRootPassword = [guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')
 $dbPassword = [guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')
+$adminPassword = [guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')
 $encryptionKey = python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 $databaseUrl = "mysql+pymysql://readmission_app:$dbPassword@mysql.default.svc.cluster.local:3306/readmission?charset=utf8mb4"
 kubectl create secret generic readmission-db-credentials `
@@ -180,6 +175,8 @@ kubectl create secret generic readmission-db-credentials `
   --from-literal="MYSQL_PASSWORD=$dbPassword" `
   --from-literal="DATABASE_URL=$databaseUrl" `
   --from-literal="APP_DATA_ENCRYPTION_KEY=$encryptionKey" `
+  --from-literal="AUTH_BOOTSTRAP_ADMIN_USERNAME=admin" `
+  --from-literal="AUTH_BOOTSTRAP_ADMIN_PASSWORD=$adminPassword" `
   --dry-run=client -o yaml | kubectl apply -f -
 
 kubectl apply -f k8s/mysql.yaml
@@ -188,7 +185,7 @@ kubectl apply -f k8s/readmission-api.yml
 kubectl rollout status deployment/readmission-risk-api -n default
 ```
 
-The MySQL StatefulSet uses a 5 GiB persistent volume claim. Ensure the cluster has a default StorageClass or update the claim with the appropriate class. Request/response and audit payloads are application-encrypted; configure Kubernetes Secret encryption at rest and encrypted persistent volumes for protection of credentials and database metadata.
+The MySQL StatefulSet uses a 5 GiB persistent volume claim. Ensure the cluster has a default StorageClass or update the claim with the appropriate class. Updating the Secret adds the required bootstrap-admin keys to existing deployments. Keep the generated bootstrap password private and use it to sign in at the API `/login` page; then create named user accounts and reset/disable access through Account management. The bootstrap password initializes the admin once and is not reapplied on later restarts. The API cookie is Secure by default, so browser login requires HTTPS outside localhost. Request/response and audit payloads are application-encrypted; configure Kubernetes Secret encryption at rest and encrypted persistent volumes for protection of credentials and database metadata.
 
 ### Rebuild the API image
 
@@ -286,6 +283,8 @@ python -m pytest -q
 With the API available at `http://127.0.0.1:8001` (for example, through the workflow port-forward), start an interactive Locust session:
 
 ```powershell
+$env:LOCUST_USERNAME = '<account username>'
+$env:LOCUST_PASSWORD = '<account password>'
 python -m locust -f locustfile.py --host http://127.0.0.1:8001
 ```
 
@@ -295,4 +294,4 @@ Open <http://127.0.0.1:8089> and set the user count and spawn rate. For a one-mi
 python -m locust -f locustfile.py --host http://127.0.0.1:8001 --headless -u 10 -r 2 -t 1m
 ```
 
-The Locust user posts a valid full-feature prediction request and marks non-200 responses or invalid prediction values as failures. Numeric form fields have a browser minimum of zero, and the API also rejects negative integer inputs.
+Set `LOCUST_USERNAME` and `LOCUST_PASSWORD` to an active account before either run. Each Locust user signs in, obtains a session CSRF token, and then posts a valid full-feature prediction request; non-200 responses or invalid prediction values are marked as failures. Numeric form fields have a browser minimum of zero, and the API also rejects negative integer inputs.

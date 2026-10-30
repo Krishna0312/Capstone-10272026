@@ -1,5 +1,8 @@
 import json
 import os
+import hashlib
+import re
+import secrets
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Any
@@ -14,9 +17,13 @@ from sqlalchemy import (
     MetaData,
     String,
     Table,
+    Boolean,
     create_engine,
     delete,
+    func,
     insert,
+    select,
+    update,
 )
 from sqlalchemy.engine import Engine
 
@@ -44,6 +51,25 @@ audit_events = Table(
     Column("event_type", String(100), nullable=False),
     Column("payload", LargeBinary(length=16_777_215), nullable=False),
     Column("occurred_at", DateTime, nullable=False, index=True),
+)
+
+auth_users = Table(
+    "auth_users",
+    metadata,
+    Column("username", String(64), primary_key=True),
+    Column("password_hash", String(256), nullable=False),
+    Column("role", String(16), nullable=False, default="user"),
+    Column("is_active", Boolean, nullable=False, default=True),
+    Column("created_at", DateTime, nullable=False),
+)
+
+auth_sessions = Table(
+    "auth_sessions",
+    metadata,
+    Column("token_hash", String(64), primary_key=True),
+    Column("username", String(64), nullable=False, index=True),
+    Column("csrf_token", String(64), nullable=False),
+    Column("expires_at", DateTime, nullable=False, index=True),
 )
 
 
@@ -114,10 +140,218 @@ class DataStore:
             audit_result = connection.execute(
                 delete(audit_events).where(audit_events.c.occurred_at < cutoff)
             )
-        return (request_result.rowcount or 0) + (audit_result.rowcount or 0)
+            session_result = connection.execute(
+                delete(auth_sessions).where(auth_sessions.c.expires_at < _naive_utc(now or datetime.now(timezone.utc)))
+            )
+        return (
+            (request_result.rowcount or 0)
+            + (audit_result.rowcount or 0)
+            + (session_result.rowcount or 0)
+        )
+
+    def create_user(self, username: str, password: str, role: str = "user") -> None:
+        normalized_username = _validate_username(username)
+        if role not in {"admin", "user"}:
+            raise ValueError("role must be 'admin' or 'user'")
+        password_hash = _hash_password(password)
+        with self._engine.begin() as connection:
+            connection.execute(
+                insert(auth_users).values(
+                    username=normalized_username,
+                    password_hash=password_hash,
+                    role=role,
+                    is_active=True,
+                    created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                )
+            )
+
+    def ensure_bootstrap_admin(self, username: str, password: str) -> None:
+        normalized_username = _validate_username(username)
+        with self._engine.begin() as connection:
+            existing = connection.execute(
+                select(auth_users.c.username).where(auth_users.c.username == normalized_username)
+            ).first()
+            if existing is None:
+                connection.execute(
+                    insert(auth_users).values(
+                        username=normalized_username,
+                        password_hash=_hash_password(password),
+                        role="admin",
+                        is_active=True,
+                        created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                    )
+                )
+
+    def authenticate_user(self, username: str, password: str) -> dict[str, Any] | None:
+        normalized_username = username.strip().lower()
+        with self._engine.connect() as connection:
+            user = connection.execute(
+                select(auth_users).where(auth_users.c.username == normalized_username)
+            ).mappings().first()
+        password_hash = user["password_hash"] if user is not None else _DUMMY_PASSWORD_HASH
+        password_valid = _verify_password(password, password_hash)
+        if user is None or not user["is_active"] or not password_valid:
+            return None
+        return _public_user(user)
+
+    def create_session(self, username: str, session_hours: int) -> tuple[str, str]:
+        token = secrets.token_urlsafe(32)
+        csrf_token = secrets.token_urlsafe(32)
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=session_hours)
+        with self._engine.begin() as connection:
+            connection.execute(
+                insert(auth_sessions).values(
+                    token_hash=_token_hash(token),
+                    username=username,
+                    csrf_token=csrf_token,
+                    expires_at=expires_at.replace(tzinfo=None),
+                )
+            )
+        return token, csrf_token
+
+    def get_session(self, token: str) -> dict[str, Any] | None:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        with self._engine.begin() as connection:
+            session = connection.execute(
+                select(auth_sessions, auth_users.c.role, auth_users.c.is_active).join(
+                    auth_users, auth_users.c.username == auth_sessions.c.username
+                ).where(auth_sessions.c.token_hash == _token_hash(token))
+            ).mappings().first()
+            if session is None:
+                return None
+            if session["expires_at"] <= now or not session["is_active"]:
+                connection.execute(
+                    delete(auth_sessions).where(auth_sessions.c.token_hash == _token_hash(token))
+                )
+                return None
+            return {
+                "username": session["username"],
+                "role": session["role"],
+                "csrf_token": session["csrf_token"],
+                "expires_at": session["expires_at"],
+            }
+
+    def revoke_session(self, token: str) -> None:
+        with self._engine.begin() as connection:
+            connection.execute(
+                delete(auth_sessions).where(auth_sessions.c.token_hash == _token_hash(token))
+            )
+
+    def list_users(self) -> list[dict[str, Any]]:
+        with self._engine.connect() as connection:
+            users = connection.execute(
+                select(
+                    auth_users.c.username,
+                    auth_users.c.role,
+                    auth_users.c.is_active,
+                    auth_users.c.created_at,
+                ).order_by(auth_users.c.username)
+            ).mappings()
+            return [dict(user) for user in users]
+
+    def set_user_active(self, username: str, is_active: bool) -> bool:
+        with self._engine.begin() as connection:
+            target = connection.execute(
+                select(auth_users.c.role, auth_users.c.is_active)
+                .where(auth_users.c.username == username)
+                .with_for_update()
+            ).mappings().first()
+            if target is None:
+                return False
+            if target["role"] == "admin" and target["is_active"] and not is_active:
+                active_admins = connection.execute(
+                    select(auth_users.c.username)
+                    .where(
+                        auth_users.c.role == "admin",
+                        auth_users.c.is_active.is_(True),
+                    )
+                    .with_for_update()
+                ).scalars().all()
+                if len(active_admins) <= 1:
+                    raise ValueError("The last active administrator cannot be disabled.")
+            connection.execute(
+                update(auth_users)
+                .where(auth_users.c.username == username)
+                .values(is_active=is_active)
+            )
+            if not is_active:
+                connection.execute(
+                    delete(auth_sessions).where(auth_sessions.c.username == username)
+                )
+        return True
+
+    def reset_user_password(self, username: str, password: str) -> bool:
+        password_hash = _hash_password(password)
+        with self._engine.begin() as connection:
+            result = connection.execute(
+                update(auth_users)
+                .where(auth_users.c.username == username)
+                .values(password_hash=password_hash)
+            )
+            if result.rowcount:
+                connection.execute(
+                    delete(auth_sessions).where(auth_sessions.c.username == username)
+                )
+        return bool(result.rowcount)
+
+    def active_admin_count(self) -> int:
+        with self._engine.connect() as connection:
+            return connection.execute(
+                select(func.count()).select_from(auth_users).where(
+                    auth_users.c.role == "admin",
+                    auth_users.c.is_active.is_(True),
+                )
+            ).scalar_one()
 
     def _encrypt(self, payload: bytes) -> bytes:
         return self._cipher.encrypt(payload)
+
+
+_USERNAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{2,63}$")
+
+
+def _validate_username(username: str) -> str:
+    normalized = username.strip().lower()
+    if not _USERNAME_PATTERN.fullmatch(normalized):
+        raise ValueError("Username must be 3-64 characters using letters, numbers, '.', '_' or '-'.")
+    return normalized
+
+
+def _hash_password(password: str) -> str:
+    if len(password) < 12 or len(password) > 128:
+        raise ValueError("Password must be between 12 and 128 characters.")
+    salt = secrets.token_bytes(16)
+    digest = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=2**14, r=8, p=1)
+    return f"scrypt${salt.hex()}${digest.hex()}"
+
+
+def _verify_password(password: str, password_hash: str) -> bool:
+    try:
+        algorithm, salt_hex, digest_hex = password_hash.split("$", maxsplit=2)
+        if algorithm != "scrypt":
+            return False
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(digest_hex)
+        actual = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=2**14, r=8, p=1)
+    except (ValueError, TypeError):
+        return False
+    return secrets.compare_digest(actual, expected)
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("ascii")).hexdigest()
+
+
+def _public_user(user: Any) -> dict[str, Any]:
+    return {
+        "username": user["username"],
+        "role": user["role"],
+        "is_active": user["is_active"],
+        "created_at": user["created_at"],
+    }
+
+
+_DUMMY_PASSWORD_HASH = _hash_password(secrets.token_urlsafe(24))
 
 
 def _naive_utc(value: datetime) -> datetime:
