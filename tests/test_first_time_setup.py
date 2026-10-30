@@ -53,7 +53,7 @@ def test_compose_setup_waits_for_api_and_monitoring_services(tmp_path, monkeypat
 
     assert commands == [["docker", "compose", "up", "--build", "-d"]]
     assert urls == [
-        "http://127.0.0.1:8000/health",
+        "http://127.0.0.1:8001/health",
         "http://127.0.0.1:3001/api/health",
         "http://127.0.0.1:9091/-/ready",
         "http://127.0.0.1:9092/-/healthy",
