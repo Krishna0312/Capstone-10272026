@@ -248,6 +248,16 @@ def _load_image(image: str, archive: Path) -> None:
             )
         return
 
+    context = subprocess.run(
+        ["kubectl", "config", "current-context"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if context.returncode == 0 and context.stdout.strip() == "minikube" and shutil.which("minikube"):
+        _run(["minikube", "image", "load", str(archive)])
+        return
+
     nodes = json.loads(_run(["kubectl", "get", "nodes", "-o", "json"]))
     provider_id = nodes["items"][0].get("spec", {}).get("providerID", "")
     if provider_id.startswith("kind://") and shutil.which("kind"):
